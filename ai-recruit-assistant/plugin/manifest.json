@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "AI Recruit Assistant",
+  "version": "0.1.0",
+  "description": "本地安装版 AI 招聘助手插件",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AI Recruit Assistant"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ]
+}
