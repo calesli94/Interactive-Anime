@@ -111,41 +111,132 @@ def health_check() -> dict:
     return {"status": "ok"}
 
 
+def _cap_level(level: str, max_level: str) -> str:
+    order = {"D": 0, "C": 1, "B": 2, "A": 3, "S": 4}
+    reverse = {v: k for k, v in order.items()}
+    return reverse[min(order.get(level, 0), order.get(max_level, 0))]
+
+
+def _candidate_text(candidate: dict) -> str:
+    parts: list[str] = []
+    for key in ["raw_text", "expected_position", "current_title", "title", "education", "salary_expectation"]:
+        value = candidate.get(key)
+        if value:
+            parts.append(str(value))
+    for key in ["skills", "project_keywords", "work_experiences"]:
+        value = candidate.get(key) or []
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        else:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def _strict_art_score(candidate: dict, job_config: dict) -> dict:
+    title = str(job_config.get("title") or job_config.get("job_title") or "").strip()
+    text = _candidate_text(candidate)
+    reasons: list[str] = []
+    score = 20
+    severe_risk = False
+
+    if not title:
+        return {
+            "score": 45,
+            "level": "B",
+            "priority": "中",
+            "recommended_action": "请先确认岗位信息",
+            "recommended_mode": "assist",
+            "quota_type": "normal",
+            "message_strategy": "信息补全型",
+            "reasons": ["扣分：缺少当前沟通岗位，无法做岗位约束评分"],
+            "candidate_starred": False,
+        }
+
+    if len(text.strip()) < 80 or candidate.get("profile_complete") is False:
+        reasons.append("扣分：候选人在线简历信息不完整")
+
+    match_groups = [
+        ("原画/角色原画/角色设计", ["原画", "角色原画", "角色设计"]),
+        ("角色/场景游戏美术", ["游戏美术", "角色", "场景"]),
+        ("美宣方向", ["美宣", "宣传图", "角色美宣"]),
+        ("绘画风格", ["手绘", "厚涂", "二次元", "写实", "欧美", "日韩"]),
+        ("绘画工具", ["Photoshop", "PS", "SAI", "CSP"]),
+        ("项目美术职责", ["项目经历", "工作经历", "道具设计", "商业化", "手游", "端游", "游戏"]),
+    ]
+    missing: list[str] = []
+    for label, words in match_groups:
+        hits = [word for word in words if _contains_any(text, [word])]
+        if hits:
+            score += 10 if label != "绘画工具" else 8
+            reasons.append(f"匹配：{label}（{ '、'.join(hits[:4]) }）")
+        else:
+            missing.append(label)
+
+    risk_words = ["AI视频", "技术美术", "TA", "平面设计", "运营", "行政", "程序", "开发", "客服", "销售", "非美术"]
+    risks = [word for word in risk_words if _contains_any(text, [word])]
+    if risks:
+        score -= 25
+        severe_risk = True
+        reasons.append(f"扣分：岗位要求原画/角色美宣，但候选人偏{'、'.join(risks[:4])}")
+
+    if missing:
+        score -= min(25, len(missing) * 5)
+        reasons.append(f"缺失：未看到{'、'.join(missing[:4])}")
+    if not _contains_any(text, ["作品", "作品集", "链接", "ArtStation", "站酷", "米画师"]):
+        reasons.append("风险：未看到完整项目作品链接")
+
+    if "原画" in title or "角色美宣" in title or "角色设计" in title:
+        if not _contains_any(text, ["原画", "角色原画", "角色设计", "美宣", "游戏美术", "角色"]):
+            score = min(score, 45)
+            severe_risk = True
+            reasons.append("扣分：当前岗位是原画/角色美宣/角色设计，但简历缺少核心方向关键词")
+
+    score = max(0, min(score, 100))
+    level = _level_from_score(score)
+    if len(text.strip()) < 80 or candidate.get("profile_complete") is False:
+        level = _cap_level(level, "B")
+        score = min(score, 69)
+    if severe_risk:
+        level = _cap_level(level, "B")
+        score = min(score, 65)
+    if not title:
+        level = _cap_level(level, "B")
+
+    priority = _priority_from_level(level)
+    if not title or level == "B":
+        priority = "中"
+    if level in {"C", "D"}:
+        priority = "低"
+
+    if not title:
+        action = "请先确认岗位信息"
+    elif len(text.strip()) < 80 or candidate.get("profile_complete") is False:
+        action = "请打开在线简历后重新分析"
+    else:
+        action = _recommended_action_from_level(level)
+
+    mode = "manual" if level in {"S", "A"} else ("assist" if level == "B" else "observe")
+    return {
+        "score": score,
+        "level": level,
+        "priority": priority,
+        "recommended_action": action,
+        "recommended_mode": mode,
+        "quota_type": "priority" if priority == "高" else "normal",
+        "message_strategy": "项目驱动型" if level in {"S", "A"} else "信息补全型",
+        "reasons": reasons or ["扣分：未读取到足够岗位匹配信息"],
+        "candidate_starred": bool(level in {"S", "A"} and not severe_risk),
+    }
+
+
 @app.post("/api/priority/analyze")
 def priority_analyze(payload: dict) -> dict:
-    candidate = payload.get("candidate", {})
-    job_config = payload.get("job_config", {})
+    candidate = payload.get("candidate", {}) or {}
+    job_config = payload.get("job_config", {}) or {}
     context_id = payload.get("context_id", "")
-    req = AnalyzeRequest(
-        candidate={
-            "name": candidate.get("name", "未知候选人"),
-            "skills": candidate.get("skills", []),
-            "years_experience": candidate.get("experience_years", 0),
-            "projects_count": len(candidate.get("project_keywords", [])),
-            "activity_score": 80 if candidate.get("last_active") else 50,
-            "communication_status": "neutral",
-        },
-        job={
-            "required_skills": job_config.get("required_skills", []),
-            "min_years_experience": 1,
-            "preferred_projects_count": len(job_config.get("preferred_keywords", [])) or 1,
-            "urgency": job_config.get("urgency", "medium"),
-        },
-    )
-    result = analyze_priority(req)
-    log_event("analyze_candidate", f"{candidate.get('name', '')}:{context_id}")
-    strategy = "项目驱动型" if result.priority == "高" else "低压力型"
-    return {
-        "score": result.score,
-        "level": result.level,
-        "priority": result.priority,
-        "recommended_action": "优先沟通" if result.priority == "高" else "正常跟进",
-        "recommended_mode": result.recommended_mode,
-        "quota_type": "priority" if result.priority == "高" else "normal",
-        "message_strategy": strategy,
-        "context_id": context_id,
-        "reasons": result.reasons,
-    }
+    result = _strict_art_score(candidate, job_config)
+    log_event("analyze_candidate", f"{candidate.get('name', '')}:{job_config.get('title', '')}:{context_id}")
+    return {**result, "context_id": context_id}
 
 
 def _contains_any(text: str, keywords: list[str]) -> bool:
@@ -280,6 +371,26 @@ def generate_greeting(payload: dict) -> dict:
     return {"messages": messages}
 
 
+def _matching_points(candidate: dict, job_title: str) -> list[str]:
+    text = _candidate_text(candidate)
+    points: list[str] = []
+    for label, words in [
+        ("原画师经历", ["原画", "角色原画"]),
+        ("角色设计经历", ["角色设计", "角色"]),
+        ("角色美宣经验", ["美宣", "角色美宣", "宣传图"]),
+        ("道具/项目美术设计", ["道具设计", "项目经历", "游戏"]),
+        ("Photoshop/SAI/CSP 技能", ["Photoshop", "PS", "SAI", "CSP"]),
+        ("手绘/厚涂等绘画风格", ["手绘", "厚涂", "二次元", "写实", "欧美", "日韩"]),
+    ]:
+        if _contains_any(text, words):
+            points.append(label)
+    if not points and candidate.get("expected_position"):
+        points.append(f"期望职位是{candidate.get('expected_position')}")
+    if not points and candidate.get("current_title"):
+        points.append(f"当前经历包含{candidate.get('current_title')}")
+    return points[:3]
+
+
 @app.post("/api/message/generate")
 def message_generate(payload: dict) -> dict:
     candidate = payload.get("candidate", {}) or {}
@@ -288,28 +399,28 @@ def message_generate(payload: dict) -> dict:
     context_id = payload.get("context_id", "")
     name = str(candidate.get("name") or "").strip()
     job_title = str(job_config.get("title") or job_config.get("job_title") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="缺少候选人姓名，无法生成定向话术")
-    if not job_title:
-        raise HTTPException(status_code=400, detail="缺少岗位名称，无法生成定向话术")
-    required_skills = "、".join(job_config.get("required_skills", []) or job_config.get("requirements", []) or []) or "岗位核心技能"
-    preferred = "、".join(job_config.get("preferred_keywords", []) or job_config.get("keywords", []) or []) or required_skills
+    if not name or not job_title:
+        raise HTTPException(status_code=400, detail="缺少候选人姓名或岗位信息，无法生成精准话术")
+    points = _matching_points(candidate, job_title)
+    if not points:
+        points = ["简历中暂未提取到明确匹配点，建议先打开在线简历确认"]
+    point_text = "，也".join(points)
     strategy = priority_result.get("message_strategy", "项目驱动型")
     variants = [
         {
             "strategy": "项目驱动型",
-            "message": f"{name}你好，我这边在看{job_title}方向机会，注意到你经历里和{required_skills}、{preferred}有契合点。想和你简单交流下当前项目和岗位情况，方便的话我先发你核心信息。",
-            "reason": f"结合候选人{name}与{job_title}的项目/技能匹配点",
+            "message": f"{name}你好，看到你有{point_text}。我们当前沟通的是{job_title}岗位，方向上和你的相关经历比较接近，想和你简单确认下近期是否考虑这类机会？",
+            "reason": f"绑定当前候选人{name}、当前沟通岗位{job_title}和简历匹配点：{'、'.join(points)}",
         },
         {
             "strategy": "低压力型",
-            "message": f"{name}你好，打扰一下。我负责的{job_title}岗位正在看有相关项目经验的候选人，你可以先低压力了解下，不合适也没关系。岗位重点会围绕{required_skills}展开。",
-            "reason": "降低回复压力，适合观望或未回复候选人",
+            "message": f"{name}你好，打扰一下。我这边当前沟通的是{job_title}岗位，看到你简历里有{point_text}，所以想先和你低压力同步下岗位方向；如果你近期不考虑也没关系。",
+            "reason": "保留具体岗位和真实匹配点，同时降低回复压力",
         },
         {
-            "strategy": "好奇心型",
-            "message": f"{name}你好，我看到你背景里有些点和我们{job_title}岗位比较接近，尤其是{preferred}方向。我有点好奇你更偏向哪类项目或团队？如果方向合适我们可以再细聊。",
-            "reason": f"当前推荐策略：{strategy}，通过问题引导候选人回复",
+            "strategy": "确认意向型",
+            "message": f"{name}你好，看到你简历中的{point_text}和{job_title}有一定关联。我想先确认下，你现在是否还关注原画/角色美宣/角色设计这类机会？如果方向合适我再发你岗位细节。",
+            "reason": f"当前推荐策略：{strategy}，先确认候选人对当前岗位的真实意向",
         },
     ]
     log_event("generate_message", f"{name}:{job_title}:{context_id}")

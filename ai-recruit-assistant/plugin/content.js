@@ -83,93 +83,185 @@ function parseYears(text) {
 }
 
 function parseName(text) {
-  const explicit = text.match(/(?:姓名|候选人|联系人)[:：\s]*([\u4e00-\u9fa5]{2,6})/);
-  const compact = text.match(/^([\u4e00-\u9fa5]{2,6})(?=\s*(男|女|\d{2}岁|本科|硕士|博士|\d+年|在线|沟通))/);
-  const name = explicit?.[1] || compact?.[1] || "";
+  const cleaned = cleanText(text);
+  const explicit = cleaned.match(/(?:姓名|候选人|联系人)[:：\s]*([\u4e00-\u9fa5]{2,6})/);
+  const compact = cleaned.match(/^([\u4e00-\u9fa5]{2,6})(?=\s*(男|女|\d{2}岁|本科|硕士|博士|\d+年|在线|沟通))/);
+  const nearProfile = cleaned.match(/([\u4e00-\u9fa5]{2,6})\s*(?:男|女)?\s*(?:\d{2}岁|本科|硕士|博士|大专|\d+年)/);
+  const name = explicit?.[1] || compact?.[1] || nearProfile?.[1] || "";
   return BAD_NAMES.includes(name) ? "" : name;
 }
 
-function candidateRootCandidates() {
-  return queryVisible([
-    ".chat-user, .chat-header, .conversation-header, .message-header",
-    ".resume-detail, .geek-detail, .candidate-detail, .resume-card, .geek-card",
-    ".selected, .active, [class*='selected'], [class*='active']",
-    "[class*='resume'], [class*='geek'], [class*='candidate']",
-  ]).filter((el) => {
-    const text = visibleText(el);
-    return text.length > 0 && !isNavLike(text, el) && (includesAny(text, CANDIDATE_SIGNALS) || parseName(text) || /\d+岁|\d+年|本科|硕士|博士/.test(text));
+const FORBIDDEN_JOB_TITLES = ["职位管理", "推荐牛人", "深度搜索", "搜索", "沟通", "意向沟通", "项目外包", "直播招聘", "招聘规范", "我的客服", "面试", "招聘数据", "VIP", "账号", "导航"];
+
+function rectInfo(node) {
+  const rect = node.getBoundingClientRect();
+  return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+}
+
+function debugItem(node, reason) {
+  return { text_preview: visibleText(node).slice(0, 240), className: String(node.className || "").slice(0, 160), rect: rectInfo(node), reason };
+}
+
+function isForbiddenJobTitle(title) {
+  const value = cleanText(title);
+  return !value || FORBIDDEN_JOB_TITLES.some((word) => value === word || value.includes(word)) || NAV_WORDS.some((word) => value === word);
+}
+
+function normalizeJobTitle(text) {
+  const cleaned = cleanText(text).replace(/^[\d月日\-/.:：\s]+/, "");
+  const match = cleaned.match(/(?:沟通的职位|沟通职位|职位|岗位)[:：\s]*([^\n。；;，,|]{2,40})/);
+  return cleanText(match?.[1] || cleaned).replace(/^(当前|沟通|的|职位|岗位)[:：\s]*/, "").slice(0, 40);
+}
+
+function chatJobCardCandidates() {
+  const selectors = [
+    ".message-list [class*='job'], .chat-content [class*='job'], .im-message-list [class*='job']",
+    ".message-list [class*='card'], .chat-content [class*='card'], .im-message-list [class*='card']",
+    "[class*='message'] [class*='job'], [class*='bubble'] [class*='job'], [class*='card']",
+    "div, li, section",
+  ];
+  return queryVisible(selectors).filter((node) => {
+    const text = visibleText(node);
+    if (text.length < 4 || text.length > 220 || isNavLike(text, node)) return false;
+    const cls = String(node.className || "").toLowerCase();
+    return /沟通的职位|沟通职位|职位[:：]/.test(text) || (/job|position|card/.test(cls) && /职位|岗位/.test(text));
+  }).sort((a, b) => {
+    const at = visibleText(a);
+    const bt = visibleText(b);
+    const as = /沟通的职位|沟通职位/.test(at) ? 0 : 1;
+    const bs = /沟通的职位|沟通职位/.test(bt) ? 0 : 1;
+    return as - bs || at.length - bt.length;
   });
 }
 
-function extractCandidate() {
-  const roots = candidateRootCandidates();
-  const root = roots[0] || null;
-  const rawText = root ? visibleText(root) : "";
-  const pageText = visibleText(document.body);
-  const scopedText = rawText || pageText;
-  const domName = root ? firstClean([".geek-name", ".candidate-name", ".resume-name", ".user-name", "[class*='name']", "[data-name]"], root) : "";
-  const headerName = firstClean([".chat-header .name", ".chat-user-name", ".conversation-header [class*='name']", ".message-header [class*='name']"]);
-  const name = [domName, headerName, parseName(scopedText)].find((v) => v && !BAD_NAMES.includes(v) && v.length <= 12) || "";
-  const skills = keywordsFrom(scopedText, ["UE", "Unreal", "虚幻", "Maya", "ZBrush", "Substance", "Blender", "3D", "角色", "场景", "动作", "特效", "Unity", "TA"]);
-  const projectKeywords = keywordsFrom(scopedText, ["3A", "次世代", "手游", "端游", "商业化皮肤", "外包", "项目", "主机", "开放世界"]);
-  const source = name ? (headerName === name ? "chat_header" : "profile_card") : "unknown";
-  return {
-    ok: Boolean(name),
-    candidate: {
-      name,
-      title: root ? firstClean([".position", ".candidate-title", ".job-title", "[class*='position']"], root) : "",
-      city: (root ? firstClean([".city", ".candidate-city", "[class*='city']"], root) : "") || (scopedText.match(/北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/) || [""])[0],
-      experience_years: parseYears(scopedText),
-      education: (scopedText.match(/大专|本科|硕士|博士|研究生/) || [""])[0],
-      salary_expectation: (root ? firstClean([".salary", ".expect-salary", "[class*='salary']", "[class*='pay']"], root) : "") || (scopedText.match(/\d+\s*[kK][-~]\s*\d+\s*[kK]|\d+\s*万[-~]\s*\d+\s*万/) || [""])[0],
-      skills,
-      project_keywords: projectKeywords,
-      raw_text: scopedText,
-      source_url: location.href,
-      source,
-      last_active: (scopedText.match(/最近活跃|今日活跃|在线|刚刚活跃/) || [""])[0],
-      contact_status: "未联系",
-    },
-    error: name ? "" : "未识别候选人姓名，请打开具体候选人聊天窗口或候选人详情页",
-  };
+function relatedJobCandidates() {
+  return queryVisible(["aside [class*='job'], header [class*='job'], [class*='current'] [class*='job'], [class*='position'], section, article, div"])
+    .filter((node) => {
+      const text = visibleText(node);
+      if (text.length < 8 || text.length > 600 || isNavLike(text, node)) return false;
+      return /当前.*职位|沟通.*岗位|沟通.*职位|在招职位|职位[:：]|岗位[:：]/.test(text);
+    })
+    .sort((a, b) => visibleText(a).length - visibleText(b).length);
 }
 
-function jobRootCandidates() {
-  return queryVisible([
-    ".job-detail, .job-sec, .job-box, .job-primary, .job-card, .position-card",
-    "[class*='job-detail'], [class*='job-card'], [class*='position-card']",
-    "section, article, main, aside, div",
-  ]).filter((el) => {
-    const text = visibleText(el);
-    if (text.length < 30 || text.length > 3000 || isNavLike(text, el)) return false;
-    return includesAny(text, JOB_SIGNALS);
-  }).sort((a, b) => visibleText(a).length - visibleText(b).length);
+function buildJobFromNode(node, source) {
+  const rawText = visibleText(node);
+  let title = normalizeJobTitle(rawText);
+  if (source !== "chat_job_card") {
+    title = firstClean([".job-title", ".job-name", "[class*='job-title']", "[class*='job-name']", "[class*='position']", "h1", "h2", "h3"], node) || title;
+    title = normalizeJobTitle(title);
+  }
+  if (isForbiddenJobTitle(title)) return null;
+  return {
+    title,
+    city: source === "chat_job_card" ? "" : ((rawText.match(/北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/) || [""])[0]),
+    salary: source === "chat_job_card" ? "" : ((rawText.match(/\d+\s*[kK][-~]\s*\d+\s*[kK]|\d+\s*万[-~]\s*\d+\s*万/) || [""])[0]),
+    description: source === "chat_job_card" ? "" : rawText.slice(0, 1200),
+    requirements: source === "chat_job_card" ? [] : manyClean(["li", ".requirement", "[class*='require']", "[class*='condition']"], node, 12).filter((t) => !isForbiddenJobTitle(t)),
+    keywords: keywordsFrom(rawText, ["原画", "角色设计", "角色原画", "美宣", "游戏美术", "角色", "场景", "手绘", "厚涂", "二次元", "写实", "欧美", "日韩", "Photoshop", "SAI", "CSP"]),
+    raw_text: rawText,
+    source,
+  };
 }
 
 function extractJob() {
-  if (/\/web\/chat\/job\/list/.test(location.pathname)) {
-    return { ok: false, job: { title: "", city: "", salary: "", description: "", requirements: [], raw_text: "", source: "unknown" }, error: "未识别岗位信息，请进入岗位详情页或手动配置岗位" };
+  for (const node of chatJobCardCandidates()) {
+    const job = buildJobFromNode(node, "chat_job_card");
+    if (job) return { ok: true, job, error: "" };
   }
-  const root = jobRootCandidates()[0] || null;
-  if (!root) return { ok: false, job: { title: "", city: "", salary: "", description: "", requirements: [], raw_text: "", source: "unknown" }, error: "未识别岗位信息，请进入岗位详情页或手动配置岗位" };
-  const rawText = visibleText(root);
-  const title = firstClean([".job-title", ".job-name", "[class*='job-title']", "[class*='job-name']", "h1", "h2"], root);
-  if (!title || includesAny(title, NAV_WORDS)) return { ok: false, job: { title: "", city: "", salary: "", description: "", requirements: [], raw_text: "", source: "unknown" }, error: "未识别岗位信息，请进入岗位详情页或手动配置岗位" };
-  const requirements = manyClean(["li", ".requirement", "[class*='require']", "[class*='condition']"], root, 12).filter((t) => !includesAny(t, NAV_WORDS));
+  for (const node of relatedJobCandidates()) {
+    const job = buildJobFromNode(node, "related_job_area");
+    if (job) return { ok: true, job, error: "" };
+  }
+  return { ok: false, job: { title: "", city: "", salary: "", description: "", requirements: [], raw_text: "", source: "unknown" }, error: "未识别当前沟通岗位，请点击聊天中的岗位卡或手动配置岗位" };
+}
+
+function extractAge(text) {
+  const m = text.match(/(\d{2})\s*岁/);
+  return m ? Number.parseInt(m[1], 10) : 0;
+}
+
+function extractExpectedPosition(text) {
+  const m = text.match(/期望(?:职位|岗位)[:：\s]*([^\n。；;]{2,50})/);
+  return cleanText(m?.[1] || "");
+}
+
+function modalCandidateNodes() {
+  return queryVisible(["[role='dialog']", ".modal", ".dialog", ".drawer", ".resume-detail", ".geek-detail", ".candidate-detail", "[class*='modal']", "[class*='dialog']", "[class*='drawer']", "[class*='resume']", "[class*='geek-detail']"])
+    .filter((node) => {
+      const text = visibleText(node);
+      if (text.length < 50 || text.length > 8000 || isNavLike(text, node)) return false;
+      const profileSignals = ["期望职位", "工作经历", "项目经历", "教育经历", "技能标签", "查看简历", "交换微信", "约面试"].filter((word) => text.includes(word)).length;
+      return profileSignals >= 2 && (parseName(text) || /\d{2}岁/.test(text) || /\d+年/.test(text));
+    })
+    .sort((a, b) => visibleText(a).length - visibleText(b).length);
+}
+
+function chatHeaderCandidates() {
+  return queryVisible([".chat-header", ".chat-user", ".conversation-header", ".message-header", "[class*='chat-header']", "[class*='conversation-header']"])
+    .filter((node) => {
+      const text = visibleText(node);
+      return text.length >= 2 && text.length < 500 && !isNavLike(text, node) && (parseName(text) || /刚刚活跃|在线|\d{2}岁|\d+年|本科|硕士|博士/.test(text));
+    });
+}
+
+function selectedChatCandidates() {
+  return queryVisible([".selected", ".active", "[class*='selected']", "[class*='active']"])
+    .filter((node) => {
+      const text = visibleText(node);
+      return text.length >= 2 && text.length < 300 && !isNavLike(text, node) && parseName(text);
+    });
+}
+
+function buildCandidateFromText(text, source) {
+  const scopedText = cleanText(text);
+  const name = parseName(scopedText);
+  const skills = keywordsFrom(scopedText, ["原画", "角色设计", "角色原画", "美宣", "游戏美术", "角色", "场景", "手绘", "厚涂", "二次元", "写实", "欧美", "日韩", "Photoshop", "PS", "SAI", "CSP", "Maya", "Blender", "ZBrush", "Substance", "UE", "Unreal", "虚幻", "Unity", "TA", "AI视频", "平面设计"]);
+  const projectKeywords = keywordsFrom(scopedText, ["项目经历", "工作经历", "游戏", "手游", "端游", "角色原画", "道具设计", "角色设计", "美宣", "商业化", "外包", "二次元", "写实", "厚涂", "动画设计"]);
+  const complete = source === "resume_modal";
   return {
-    ok: true,
-    job: {
-      title,
-      city: firstClean([".job-location", ".location", ".city", "[class*='city']"], root) || (rawText.match(/北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/) || [""])[0],
-      salary: firstClean([".salary", ".job-salary", "[class*='salary']"], root) || (rawText.match(/\d+\s*[kK][-~]\s*\d+\s*[kK]|\d+\s*万[-~]\s*\d+\s*万/) || [""])[0],
-      description: rawText.slice(0, 1200),
-      requirements,
-      keywords: keywordsFrom(rawText, ["UE", "Maya", "Unreal", "虚幻", "3A", "次世代", "角色", "场景", "手游", "端游"]),
-      raw_text: rawText,
-      source: "dom",
-    },
-    error: "",
+    name,
+    age: extractAge(scopedText),
+    title: firstClean([".position", ".candidate-title", "[class*='position']"]) || "",
+    city: (scopedText.match(/北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/) || [""])[0],
+    experience_years: parseYears(scopedText),
+    education: (scopedText.match(/大专|本科|硕士|博士|研究生/) || [""])[0],
+    expected_position: extractExpectedPosition(scopedText),
+    expected_city: (scopedText.match(/期望城市[:：\s]*(北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙)/) || ["", ""])[1],
+    salary_expectation: (scopedText.match(/\d+\s*[kK][-~]\s*\d+\s*[kK]|\d+\s*万[-~]\s*\d+\s*万/) || [""])[0],
+    current_title: (scopedText.match(/(?:当前职位|在职职位|职位)[:：\s]*([^\n。；;]{2,40})/) || ["", ""])[1],
+    work_experiences: (scopedText.match(/工作经历[^]*?(?=项目经历|教育经历|技能标签|$)/)?.[0] || "").split(/(?=\d{4}|\d+年|公司|项目)/).map(cleanText).filter((x) => x.length > 8).slice(0, 8),
+    project_keywords: projectKeywords,
+    skills,
+    raw_text: complete ? scopedText.slice(0, 5000) : scopedText.slice(0, 600),
+    source_url: location.href,
+    source,
+    profile_complete: complete,
+    warning: complete ? "" : "请点击候选人头像/姓名打开在线简历后再分析，可提升评分准确度",
+    last_active: (scopedText.match(/最近活跃|今日活跃|在线|刚刚活跃/) || [""])[0],
+    contact_status: "未联系",
   };
+}
+
+function extractCandidate() {
+  for (const node of modalCandidateNodes()) {
+    const candidate = buildCandidateFromText(visibleText(node), "resume_modal");
+    if (candidate.name) return { ok: true, candidate, warning: "", error: "" };
+  }
+  const header = chatHeaderCandidates()[0];
+  if (header) {
+    const candidate = buildCandidateFromText(visibleText(header), "chat_header");
+    if (candidate.name) return { ok: true, candidate, warning: "当前候选人信息不完整，建议打开在线简历/候选人详情后再分析", error: "" };
+  }
+  const selected = selectedChatCandidates()[0];
+  if (selected) {
+    const candidate = buildCandidateFromText(visibleText(selected), "selected_chat_item");
+    candidate.raw_text = candidate.name;
+    candidate.profile_complete = false;
+    candidate.warning = "请点击候选人头像/姓名打开在线简历后再分析，可提升评分准确度";
+    if (candidate.name) return { ok: true, candidate, warning: "当前候选人信息不完整，建议打开在线简历/候选人详情后再分析", error: "" };
+  }
+  return { ok: false, candidate: { name: "", raw_text: "", source: "unknown", profile_complete: false, warning: "请点击候选人头像/姓名打开在线简历后再分析，可提升评分准确度" }, warning: "", error: "未识别候选人姓名，请打开具体候选人聊天窗口或候选人详情页" };
 }
 
 function chatRootCandidates() {
@@ -188,7 +280,7 @@ function extractChat() {
   const root = chatRootCandidates()[0] || null;
   const candidate = extractCandidate();
   if (!root) {
-    return { ok: false, candidate_name: candidate.candidate.name || "", text: "", latest_messages: [], source: "unknown", error: "未检测到当前聊天窗口，请先打开一个具体候选人的聊天", raw_text: visibleText(document.body).slice(0, 1500) };
+    return { ok: false, candidate_name: candidate.candidate.name || "", text: "", latest_messages: [], source: "unknown", error: "未检测到当前聊天窗口，请先打开一个具体候选人的聊天", raw_text: "" };
   }
   const nodes = queryVisible([".message, .chat-item, .im-message, [class*='message-item'], [class*='bubble']"], root);
   const latest = (nodes.length ? nodes : Array.from(root.children)).map((node) => {
@@ -196,7 +288,7 @@ function extractChat() {
     const cls = `${node.className || ""}`.toLowerCase();
     const role = /mine|self|right|hr|boss/.test(cls) ? "hr" : (/left|geek|candidate|other/.test(cls) ? "candidate" : "unknown");
     return { role, text };
-  }).filter((m) => m.text).slice(-20);
+  }).filter((m) => m.text && !isForbiddenJobTitle(m.text)).slice(-20);
   return { ok: true, candidate_name: candidate.candidate.name || "", text: latest.map((m) => m.text).join("\n"), latest_messages: latest, source: "chat_messages", error: "" };
 }
 
@@ -215,10 +307,14 @@ function extractPageContext() {
   const warnings = [];
   if (!jobRes.ok) warnings.push("未识别岗位信息");
   if (!candidateRes.ok) warnings.push("未识别候选人姓名");
+  if (candidateRes.warning || candidateRes.candidate?.warning) warnings.push(candidateRes.warning || candidateRes.candidate.warning);
   if (!chatRes.ok && pageType(jobRes, candidateRes, chatRes) === "chat_page") warnings.push("未检测到聊天窗口");
   if (/\/web\/chat\/job\/list/.test(location.pathname)) warnings.push("当前页面可能是聊天列表页，请点击具体候选人对话");
   const job = jobRes.job;
   const candidate = candidateRes.candidate;
+  const selected = selectedChatCandidates()[0];
+  const selectedName = selected ? parseName(visibleText(selected)) : "";
+  if (selectedName && candidate.name && selectedName !== candidate.name) warnings.push("当前详情弹窗候选人与聊天选中对象可能不一致，请确认后再生成话术");
   const base = candidate.name ? `${candidate.name}|${job.title || ""}|${location.href}` : `${document.title}|${location.href}`;
   return { ok: true, page_type: pageType(jobRes, candidateRes, chatRes), url: location.href, title: document.title, job, candidate, chat: { candidate_name: chatRes.candidate_name, messages_text: chatRes.text, latest_messages: chatRes.latest_messages }, context_id: simpleHash(base), warnings };
 }
@@ -230,12 +326,22 @@ function debugDom() {
     if (!isVisible(node)) continue;
     const text = visibleText(node);
     if (text.length < 10 || text.length > 300 || isNavLike(text, node)) continue;
-    const rect = node.getBoundingClientRect();
-    blocks.push({ index: blocks.length, tag: node.tagName.toLowerCase(), className: String(node.className || "").slice(0, 120), id: node.id || "", text_preview: text.slice(0, 160), rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } });
+    blocks.push({ index: blocks.length, tag: node.tagName.toLowerCase(), className: String(node.className || "").slice(0, 120), id: node.id || "", text_preview: text.slice(0, 160), rect: rectInfo(node) });
     if (blocks.length >= 80) break;
   }
   const inputCandidates = Array.from(document.querySelectorAll("textarea, input, [contenteditable='true'], [role='textbox'], .ql-editor, .ProseMirror")).filter(isVisible).map((node) => ({ tag: node.tagName.toLowerCase(), type: node.getAttribute("type") || "", className: String(node.className || "").slice(0, 120), id: node.id || "", placeholder: node.getAttribute("placeholder") || "", role: node.getAttribute("role") || "", contenteditable: node.getAttribute("contenteditable") || "", text_preview: visibleText(node).slice(0, 120) }));
-  return { ok: true, url: location.href, title: document.title, body_text_length: visibleText(document.body).length, visible_blocks: blocks, input_candidates: inputCandidates };
+  return {
+    ok: true,
+    url: location.href,
+    title: document.title,
+    body_text_length: visibleText(document.body).length,
+    visible_blocks: blocks,
+    input_candidates: inputCandidates,
+    modal_candidates: modalCandidateNodes().slice(0, 10).map((node) => debugItem(node, "resume_modal_signal")),
+    chat_job_card_candidates: chatJobCardCandidates().slice(0, 10).map((node) => debugItem(node, "chat_job_card_signal")),
+    chat_header_candidates: chatHeaderCandidates().slice(0, 10).map((node) => debugItem(node, "chat_header_signal")),
+    selected_chat_candidates: selectedChatCandidates().slice(0, 10).map((node) => debugItem(node, "selected_chat_signal")),
+  };
 }
 
 function setNativeValue(el, text) {

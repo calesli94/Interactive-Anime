@@ -26,6 +26,19 @@ function notify(msg, type='info'){
 }
 function feedback(msg, type='info'){ notify(msg, type); }
 function textOrDash(v){ return v ? String(v) : '-'; }
+function isReliableContext(){ return ['chat_job_card','manual'].includes(state.job?.source) && state.candidate?.source === 'resume_modal' && state.candidate?.profile_complete !== false; }
+function renderReliability(){
+  const jobSource=state.job?.source||'-';
+  const candidateSource=state.candidate?.source||'-';
+  const complete=state.candidate?.profile_complete===true?'完整':(state.candidate?.profile_complete===false?'不完整':'-');
+  const warning=!isReliableContext()?'当前分析可信度较低：请确认岗位卡和在线简历已打开':'';
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('job-source',jobSource);
+  set('candidate-source',candidateSource);
+  set('candidate-complete',complete);
+  set('analysis-reliability-warning',warning);
+  set('score-reliability',warning||'可信');
+}
 
 function isBlockedPage(url=''){
   return /^(edge|chrome|extensions):\/\//.test(url) || /^about:/.test(url) || url.startsWith('chrome-extension://') || url.startsWith('edge-extension://');
@@ -123,6 +136,7 @@ function renderContext(){
   renderJob();
   renderCandidate();
   renderChatContext();
+  renderReliability();
 }
 
 async function saveJobIfAvailable(){
@@ -132,7 +146,7 @@ async function saveJobIfAvailable(){
 async function loadStoredJobIfMissing(){
   if(state.job?.title) return;
   const data=await chrome.storage.local.get('lastJob');
-  if(data.lastJob?.title) state.job=data.lastJob;
+  if(data.lastJob?.title && data.lastJob.source==='manual') state.job=data.lastJob;
 }
 
 function renderJob(){
@@ -141,16 +155,18 @@ function renderJob(){
   $('job-city').textContent=textOrDash(job.city);
   $('job-salary').textContent=textOrDash(job.salary);
   $('job-description-preview').textContent=textOrDash((job.description||job.raw_text||'').slice(0,120));
+  renderReliability();
 }
 
 function renderCandidate(){
   const c=state.candidate||{};
   $('candidate-name').textContent=textOrDash(c.name);
-  $('candidate-title').textContent=textOrDash(c.title);
-  $('candidate-city').textContent=textOrDash(c.city);
+  $('candidate-title').textContent=textOrDash(c.current_title||c.title||c.expected_position);
+  $('candidate-city').textContent=textOrDash(c.expected_city||c.city);
   $('candidate-exp').textContent=c.experience_years?`${c.experience_years}年`:'-';
   $('candidate-skills').textContent=(c.skills||[]).join('、')||'-';
-  $('candidate-warning').textContent=c.name?'':'未识别候选人姓名，请确认当前页面为候选人详情或聊天页';
+  $('candidate-warning').textContent=c.warning || (c.name?'':'未识别候选人姓名，请确认当前页面为候选人详情或聊天页');
+  renderReliability();
 }
 
 function renderChatContext(){
@@ -202,6 +218,8 @@ function jobConfigForApi(){
     description: job.description||job.raw_text||'',
     required_skills: job.requirements||job.keywords||[],
     preferred_keywords: job.keywords||job.requirements||[],
+    source: job.source||'',
+    raw_text: job.raw_text||'',
     urgency:'high',
   };
 }
@@ -231,6 +249,10 @@ async function analyzeCandidate(){
     $('recommended-action').textContent=textOrDash(data.recommended_action);
     $('recommended-mode').textContent=textOrDash(data.recommended_mode);
     $('recommended-reason').textContent=(data.reasons||[]).join('；');
+    if(state.candidate?.profile_complete===false){
+      $('candidate-priority').textContent='信息不完整，建议打开在线简历后重新分析';
+    }
+    renderReliability();
     await track('priority_analyzed',{candidate_name:state.candidate.name,job_title:state.job?.title||'',score:data.score});
     feedback(`已分析候选人：${state.candidate.name} / 岗位 ${state.job?.title||'未识别岗位'}`);
   }catch(e){ feedback(`分析失败：${e.message}`); }
@@ -272,6 +294,7 @@ async function fillMessage(message,strategy){
 }
 
 async function markCandidate(event_type,successText){
+  if(event_type==='candidate_starred' && (!state.priorityResult?.candidate_starred || state.candidate?.profile_complete===false)){ feedback('信息不完整或存在风险，暂不建议标记优质候选人'); return; }
   try{
     await track(event_type,{candidate_name:state.candidate?.name||'',job_title:state.job?.title||''});
     feedback(successText);
