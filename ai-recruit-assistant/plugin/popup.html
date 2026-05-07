@@ -1,11 +1,110 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>AI招聘助手</title><link rel="stylesheet" href="styles.css" /></head><body><main class="popup"><h1>AI招聘助手</h1><p id="service-status">服务检测中...</p>
-<section class="card"><h2>1. 今日推荐 TOP10</h2><ul id="top10-list" class="list"></ul></section>
-<section class="card"><h2>2. 候选人分析区</h2><textarea id="candidate-manual" placeholder="提取失败时粘贴候选人信息"></textarea><p>匹配度：<span id="match-rate">-</span></p><p>等级：<span id="candidate-level">-</span></p><p>优先级：<span id="candidate-priority">-</span></p><p>推荐动作：<span id="recommended-action">-</span></p><p>推荐模式：<span id="recommended-mode">-</span></p><p>推荐原因：<span id="recommended-reason">-</span></p><button id="analyze-btn">分析候选人</button></section>
-<section class="card"><h2>3. 打招呼模式</h2><p>当前模式：<span id="current-mode">assist</span></p><label><input type="radio" name="greet_mode" value="manual"/>manual</label><label><input type="radio" name="greet_mode" value="assist" checked/>assist</label><label><input type="radio" name="greet_mode" value="auto"/>auto</label><button id="save-mode-btn">保存设置</button></section>
-<section class="card"><h2>4. 打招呼操作区</h2><div id="message-list"></div><button id="mark-quality-btn">标记优质候选人</button><button id="mark-greeted-btn">标记已打招呼</button></section>
-<section class="card"><h2>5. 自动队列</h2><p>队列数量：<span id="queue-count">0</span></p><button id="queue-add-btn">加入队列</button><button id="queue-start-btn">开始辅助</button><button id="queue-pause-btn">暂停</button><button id="queue-clear-btn">清空</button><button id="queue-stop-all-btn">STOP ALL</button></section>
-<section class="card"><h2>6. 聊天分析</h2><textarea id="chat-manual" placeholder="提取失败时粘贴聊天记录"></textarea><p>状态：<span id="chat-status">-</span></p><p>阶段：<span id="chat-stage">-</span></p><p>建议：<span id="chat-advice">-</span></p><button id="analyze-chat-btn">分析聊天</button><div class="reply-box"><p id="reply-1"></p><button id="fill-reply-1-btn">填入</button></div><div class="reply-box"><p id="reply-2"></p><button id="fill-reply-2-btn">填入</button></div></section>
-<section class="card"><h2>7. 跟进提醒</h2><p>未回复候选人：<span id="followup-list">-</span></p><button id="generate-followup-btn">生成跟进话术</button></section>
-<section class="card"><h2>8. 今日数据</h2><p>今日分析人数：<span id="today-analyzed">0</span></p><p>生成话术次数：<span id="today-generated">0</span></p><p>填入次数：<span id="today-filled">0</span></p><p>标记发送次数：<span id="today-sent">0</span></p><p>自动执行次数：<span id="today-auto">0</span></p><p>有兴趣/观望/未回复/拒绝：<span id="today-status-split">0/0/0/0</span></p></section>
-<section class="card"><h2>状态标记</h2><button data-status="有兴趣" class="status-btn">有兴趣</button><button data-status="观望" class="status-btn">观望</button><button data-status="未回复" class="status-btn">未回复</button><button data-status="拒绝" class="status-btn">拒绝</button></section>
-</main><script src="popup.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI招聘助手</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="popup">
+    <h1>AI招聘助手</h1>
+    <p id="service-status">服务检测中...</p>
+    <p id="action-feedback"></p>
+
+    <section class="card">
+      <h2>当前页面上下文</h2>
+      <p>页面类型：<span id="page-type">-</span></p>
+      <p>Context：<span id="context-id">-</span></p>
+      <p>URL：<span id="current-url">-</span></p>
+      <button id="refresh-context-btn">刷新上下文</button>
+    </section>
+
+    <section class="card">
+      <h2>当前岗位</h2>
+      <p>岗位：<span id="job-title">-</span></p>
+      <p>城市：<span id="job-city">-</span></p>
+      <p>薪资：<span id="job-salary">-</span></p>
+      <p>描述：<span id="job-description-preview">-</span></p>
+      <button id="refresh-job-btn">刷新岗位</button>
+    </section>
+
+    <section class="card">
+      <h2>当前候选人</h2>
+      <textarea id="candidate-manual" placeholder="自动读取失败时粘贴候选人信息"></textarea>
+      <p>姓名：<span id="candidate-name">-</span></p>
+      <p>标题：<span id="candidate-title">-</span></p>
+      <p>城市：<span id="candidate-city">-</span></p>
+      <p>年限：<span id="candidate-exp">-</span></p>
+      <p>技能：<span id="candidate-skills">-</span></p>
+      <p id="candidate-warning"></p>
+      <p>匹配度：<span id="match-rate">-</span></p>
+      <p>等级：<span id="candidate-level">-</span></p>
+      <p>优先级：<span id="candidate-priority">-</span></p>
+      <p>推荐动作：<span id="recommended-action">-</span></p>
+      <p>推荐模式：<span id="recommended-mode">-</span></p>
+      <p>推荐原因：<span id="recommended-reason">-</span></p>
+      <button id="analyze-btn">分析候选人</button>
+      <button id="generate-message-btn">生成话术</button>
+    </section>
+
+    <section class="card">
+      <h2>打招呼模式</h2>
+      <p>当前模式：<span id="current-mode">assist</span></p>
+      <label><input type="radio" name="greet_mode" value="manual" />manual</label>
+      <label><input type="radio" name="greet_mode" value="assist" checked />assist</label>
+      <label><input type="radio" name="greet_mode" value="auto" />auto</label>
+      <button id="save-mode-btn">保存设置</button>
+    </section>
+
+    <section class="card">
+      <h2>话术列表</h2>
+      <div id="message-list"></div>
+      <button id="mark-quality-btn">标记优质候选人</button>
+      <button id="mark-greeted-btn">标记已打招呼</button>
+    </section>
+
+    <section class="card">
+      <h2>自动队列</h2>
+      <p>队列数量：<span id="queue-count">0</span></p>
+      <button id="queue-add-btn">加入队列</button>
+      <button id="queue-start-btn">开始辅助</button>
+      <button id="queue-pause-btn">暂停</button>
+      <button id="queue-clear-btn">清空</button>
+      <button id="queue-stop-all-btn">STOP ALL</button>
+    </section>
+
+    <section class="card">
+      <h2>聊天分析</h2>
+      <textarea id="chat-manual" placeholder="自动读取失败时粘贴聊天记录"></textarea>
+      <p>当前聊天对象：<span id="chat-candidate-name">-</span></p>
+      <p id="chat-context-warning"></p>
+      <p>状态：<span id="chat-status">-</span></p>
+      <p>阶段：<span id="chat-stage">-</span></p>
+      <p>建议：<span id="chat-advice">-</span></p>
+      <button id="analyze-chat-btn">分析聊天</button>
+      <button id="add-followup-btn">加入跟进</button>
+      <div class="reply-box"><p id="reply-1"></p><button id="fill-reply-1-btn">填入回复1</button></div>
+      <div class="reply-box"><p id="reply-2"></p><button id="fill-reply-2-btn">填入回复2</button></div>
+    </section>
+
+    <section class="card">
+      <h2>今日待跟进</h2>
+      <div id="followup-list">暂无今日待跟进</div>
+    </section>
+
+    <section class="card">
+      <h2>今日数据</h2>
+      <p>今日分析人数：<span id="today-analyzed">0</span></p>
+      <p>生成话术次数：<span id="today-generated">0</span></p>
+      <p>填入次数：<span id="today-filled">0</span></p>
+      <p>标记发送次数：<span id="today-sent">0</span></p>
+      <p>自动执行次数：<span id="today-auto">0</span></p>
+      <p>有兴趣/观望/未回复/拒绝：<span id="today-status-split">0/0/0/0</span></p>
+      <p>加入跟进：<span id="today-followup-added">0</span></p>
+      <p>已处理跟进：<span id="today-followup-handled">0</span></p>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
