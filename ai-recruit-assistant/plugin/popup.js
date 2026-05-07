@@ -110,9 +110,12 @@ async function refreshContext(){
   if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入'); return; }
   state.pageContext=ctx;
   state.job=ctx.job?.title ? ctx.job : state.job||{};
+  if(!ctx.job?.title && ctx.warnings?.includes('未识别岗位信息')) feedback('未识别岗位信息，请进入岗位详情页或手动配置岗位');
   await loadStoredJobIfMissing();
   state.candidate=ctx.candidate||{};
+  if(!ctx.candidate?.name && ctx.warnings?.includes('未识别候选人姓名')) feedback('未识别候选人姓名，请打开具体候选人聊天窗口或候选人详情页');
   state.chat=ctx.chat||{};
+  if(ctx.warnings?.includes('未检测到聊天窗口')) feedback('未检测到聊天窗口，请先点击具体候选人对话');
   state.contextId=ctx.context_id||'';
   await saveJobIfAvailable();
   renderContext();
@@ -121,7 +124,7 @@ async function refreshContext(){
 
 async function refreshJob(){
   const res=await sendToContent({type:'EXTRACT_JOB'});
-  if(res?.ok){ state.job=res.job?.title ? res.job : state.job||{}; await saveJobIfAvailable(); renderJob(); feedback(state.job?.title?'岗位信息已刷新':'当前页面未识别到岗位信息'); }
+  if(res?.ok){ state.job=res.job?.title ? res.job : state.job||{}; await saveJobIfAvailable(); renderJob(); feedback(state.job?.title?'岗位信息已刷新':'未识别岗位信息，请进入岗位详情页或手动配置岗位'); }
   else feedback(res?.error || '未能读取岗位信息');
 }
 
@@ -222,7 +225,7 @@ async function analyzeChat(){
   const manual=$('chat-manual').value.trim();
   if(res?.candidate_name) state.chat={candidate_name:res.candidate_name,messages_text:res.messages_text||res.text||manual,latest_messages:res.latest_messages||[]};
   const chatText=res?.messages_text||res?.text||manual;
-  if(!res?.ok && !manual) feedback(`未找到聊天区域，调试文本：${(res?.raw_text||'').slice(0,80)}`);
+  if(!res?.ok && !manual) feedback(res?.error || '未检测到聊天窗口，请先点击具体候选人对话');
   renderChatContext();
   if(state.chat?.candidate_name && state.candidate?.name && state.chat.candidate_name!==state.candidate.name) feedback('当前聊天对象与已分析候选人不一致，请刷新上下文');
   try{
@@ -288,8 +291,15 @@ async function saveMode(){ const mode=document.querySelector("input[name='greet_
 async function queueAction(path){ await api(path,{method:'POST'}); const st=await api('/api/queue/status'); $('queue-count').textContent=st.queue_count; feedback('队列状态已更新'); }
 async function queueAdd(){ const r=await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,context_id:state.contextId})}); $('queue-count').textContent=r.queue_count; feedback('已加入队列'); }
 
+async function debugDom(){
+  const res=await sendToContent({type:'DEBUG_DOM'});
+  $('debug-dom-output').textContent=JSON.stringify(res,null,2).slice(0,3000);
+  feedback(res?.ok?'DOM 调试信息已输出':(res?.error||'DOM 调试失败'));
+}
+
 function bind(){
   $('refresh-context-btn').onclick=refreshContext;
+  $('debug-dom-btn').onclick=debugDom;
   $('refresh-job-btn').onclick=refreshJob;
   $('analyze-btn').onclick=analyzeCandidate;
   $('generate-message-btn').onclick=generateMessages;
