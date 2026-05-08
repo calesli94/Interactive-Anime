@@ -551,13 +551,17 @@ def build_candidate_fit_summary(candidate: dict, job_config: dict, priority_resu
 
 
 def _job_core_requirement_phrase(job_config: dict, missing_points: list[str]) -> str:
-    job_text = _job_text(job_config)
-    title = str(job_config.get("title") or job_config.get("job_title") or "")
-    if _contains_any(f"{title} {job_text}", ["技术美术", "TA", "Shader", "Unity", "UE"]):
+    # Message generation may only use safe job fields, never raw_text/page text.
+    safe_job_text = " ".join(
+        [str(job_config.get("title") or job_config.get("job_title") or "")]
+        + [str(x) for x in (job_config.get("requirements") or [])[:8]]
+        + [str(x) for x in (job_config.get("preferred_keywords") or [])[:8]]
+    )
+    if _contains_any(safe_job_text, ["技术美术", "TA", "Shader", "Unity", "UE"]):
         return "TA、引擎、Shader或工具链经验"
-    if _contains_any(f"{title} {job_text}", ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头"]):
+    if _contains_any(safe_job_text, ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头"]):
         return "AI视频、剪辑、AI工具和镜头语言经验"
-    if _contains_any(f"{title} {job_text}", ["角色美宣", "角色设计", "原画"]):
+    if _contains_any(safe_job_text, ["角色美宣", "角色设计", "原画"]):
         return "角色原画、美宣和游戏项目经验"
     return missing_points[0] if missing_points else "岗位核心能力"
 
@@ -581,13 +585,88 @@ def _matching_points(candidate: dict, job_title: str) -> list[str]:
     return points[:3]
 
 
+RAW_CHAT_LEAK_PATTERNS = [
+    "目前也没计划", "我们是承接的项目", "沟通职位", "沟通的职位", "已读", "送达", "您好，我是", "你熟悉哪个引擎",
+]
+
+
+def contains_raw_chat_leak(message: str, raw_sources: list[str] | None = None) -> bool:
+    text = str(message or "")
+    if any(pattern in text for pattern in RAW_CHAT_LEAK_PATTERNS):
+        return True
+    if re.search(r"\b\d{2}-\d{2}\s+\d{1,2}:\d{2}\b", text) or re.search(r"\b\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}", text):
+        return True
+    # Detect a long contiguous fragment copied from raw chat/page text.
+    for source in raw_sources or []:
+        compact = re.sub(r"\s+", "", str(source or ""))
+        if len(compact) < 20:
+            continue
+        for i in range(0, min(len(compact) - 19, 400), 5):
+            fragment = compact[i : i + 20]
+            if fragment and fragment in re.sub(r"\s+", "", text):
+                return True
+    return False
+
+
+def regenerate_safe_message(safe_input: dict, strategy: str = "低压力观察型") -> str:
+    name = safe_input["candidate_name"]
+    job_title = safe_input["job_title"]
+    core = safe_input.get("core_requirement") or "岗位核心能力"
+    stage = safe_input.get("communication_stage") or "未沟通"
+    if strategy == "礼貌拒绝型" or safe_input.get("message_intent") == "reject":
+        return f"{name}你好，感谢你的回复。当前{job_title}更看重{core}，和你目前方向可能不完全一致，这次先不打扰你，后续有更匹配的方向再联系你。"
+    if stage in {"候选人拒绝", "候选人观望"}:
+        return f"{name}你好，理解你目前还在观望机会，我先不强推当前{job_title}，后续有更匹配的方向再联系你。"
+    return f"{name}你好，看到你的经历和当前{job_title}有一定交集，我想先确认下你是否有{core}相关经验，方便的话可以简单说下吗？"
+
+
+def final_message_guard(message: str, safe_input: dict, strategy: str, raw_sources: list[str] | None = None) -> str:
+    if contains_raw_chat_leak(message, raw_sources):
+        return regenerate_safe_message(safe_input, strategy)
+    return message
+
+
+def generate_message_from_safe_input(safe_input: dict, raw_sources: list[str] | None = None) -> dict:
+    name = safe_input["candidate_name"]
+    job_title = safe_input["job_title"]
+    matched_text = "、".join(safe_input.get("matched_points") or []) or "部分项目经历"
+    missing_text = "、".join(safe_input.get("missing_points") or []) or safe_input.get("core_requirement") or "岗位关键能力"
+    core_requirement = safe_input.get("core_requirement") or "岗位核心能力"
+    intent = safe_input.get("message_intent") or "ask_more"
+    stage = safe_input.get("communication_stage") or "未沟通"
+    objections = safe_input.get("known_objections") or []
+    no_push = "不看机会/暂无计划" in objections
+
+    if stage in {"候选人拒绝", "候选人观望"}:
+        intent = "reject" if stage == "候选人拒绝" else "observe"
+
+    if intent == "connect" and not no_push:
+        strategy = "建立链接型"
+        message = f"{name}你好，看到你在{matched_text}方面和我们当前沟通的{job_title}比较接近，想简单和你确认一下近期是否考虑这类机会。"
+        reason = f"基于安全摘要生成；沟通阶段：{stage}"
+    elif intent == "ask_more" and not no_push:
+        strategy = "补充确认型"
+        message = f"{name}你好，我看到你有{matched_text}，但还想确认一下你是否有{missing_text}相关经验，方便的话可以简单说下吗？"
+        reason = f"仅追问摘要里的关键缺口；沟通阶段：{stage}"
+    elif intent == "observe" or no_push:
+        strategy = "低压力观察型"
+        message = f"{name}你好，理解你目前还在观望机会。我先不强推当前{job_title}，后续如果有更贴合你方向和节奏的机会，再和你同步。"
+        reason = f"候选人处于{stage}，避免重复强推"
+    else:
+        strategy = "礼貌拒绝型"
+        message = f"{name}你好，感谢你的回复。我们看了下当前沟通的{job_title}，核心要求更偏{core_requirement}，和你目前方向可能不完全一致，这次先不打扰你，后续有更匹配的方向再联系你。"
+        reason = "不适配或风险较高，生成暂不推进话术"
+
+    return {"strategy": strategy, "message": final_message_guard(message, safe_input, strategy, raw_sources), "reason": reason}
+
 @app.post("/api/message/generate")
 def message_generate(payload: dict) -> dict:
     candidate = payload.get("candidate", {}) or {}
     priority_result = payload.get("priority_result", {}) or {}
     job_config = payload.get("job_config", {}) or {}
     context_id = payload.get("context_id", "")
-    chat_context = summarize_chat_context(str(payload.get("chat_text", "") or ""))
+    raw_chat_text = str(payload.get("chat_text", "") or "")
+    chat_context = summarize_chat_context(raw_chat_text)
     summary = build_candidate_fit_summary(candidate, job_config, priority_result)
 
     name = summary["candidate_name"]
@@ -595,53 +674,27 @@ def message_generate(payload: dict) -> dict:
     if not name or name == "候选人" or not job_title or job_title == "该岗位":
         raise HTTPException(status_code=400, detail="缺少候选人姓名或岗位信息，无法生成精准话术")
 
-    intent = summary["message_intent"]
-    matched_points = summary["top_matched_points"]
-    missing_points = summary["top_missing_points"]
-    risk_points = summary["risk_points"]
-    matched_text = "、".join(matched_points[:2]) or "部分项目经历"
-    missing_text = "、".join(missing_points[:2]) or _job_core_requirement_phrase(job_config, missing_points)
-    core_requirement = _job_core_requirement_phrase(job_config, missing_points)
+    safe_input = {
+        "candidate_name": name,
+        "job_title": job_title,
+        "matched_points": summary["top_matched_points"],
+        "missing_points": summary["top_missing_points"],
+        "risk_points": summary["risk_points"],
+        "communication_stage": chat_context["stage"],
+        "communication_intent": chat_context["last_candidate_intent"],
+        "known_objections": chat_context["known_objections"],
+        "message_intent": summary["message_intent"],
+        "core_requirement": _job_core_requirement_phrase(job_config, summary["top_missing_points"]),
+    }
+    # HARD RULE: variants are generated only from SAFE_MESSAGE_INPUT. Raw chat/page/JD text is only passed to the guard for leak detection.
+    raw_sources = [
+        raw_chat_text,
+        str(candidate.get("raw_text") or ""),
+        str(job_config.get("raw_text") or ""),
+    ]
+    variants = [generate_message_from_safe_input(safe_input, raw_sources)]
 
-    if chat_context["stage"] in {"候选人拒绝", "候选人观望"}:
-        intent = "reject" if chat_context["stage"] == "候选人拒绝" else "observe"
-    no_push = "不看机会/暂无计划" in chat_context["known_objections"]
-
-    if intent == "connect" and not no_push:
-        variants = [
-            {
-                "strategy": "建立链接型",
-                "message": f"{name}你好，看到你在{matched_text}方面和我们当前沟通的{job_title}比较接近，想简单和你确认一下近期是否考虑这类机会。",
-                "reason": f"基于岗位要求和候选人匹配摘要生成；沟通阶段：{chat_context['stage']}",
-            }
-        ]
-    elif intent == "ask_more" and not no_push:
-        variants = [
-            {
-                "strategy": "补充确认型",
-                "message": f"{name}你好，我看到你有{matched_text}，但还想确认一下你是否有{missing_text}相关经验，方便的话可以简单说下吗？",
-                "reason": f"当前信息不足，仅追问关键缺口；沟通阶段：{chat_context['stage']}",
-            }
-        ]
-    elif intent == "observe" or no_push:
-        variants = [
-            {
-                "strategy": "低压力观察型",
-                "message": f"{name}你好，感谢你的回复。我先不强推当前{job_title}，后续如果有更贴合你方向和节奏的机会，再和你同步。",
-                "reason": f"候选人处于{chat_context['stage']}，避免重复强推；已知顾虑：{'、'.join(chat_context['known_objections']) or '无'}",
-            }
-        ]
-    else:
-        risk_text = "、".join(risk_points[:2]) or "方向匹配度有限"
-        variants = [
-            {
-                "strategy": "礼貌拒绝型",
-                "message": f"{name}你好，感谢你的回复。我们看了下当前沟通的{job_title}，核心要求更偏{core_requirement}，和你目前方向可能不完全一致，这次先不打扰你，后续有更匹配的方向再联系你。",
-                "reason": f"不适配或风险较高：{risk_text}；未使用原始聊天记录拼接",
-            }
-        ]
-
-    log_event("generate_message", f"{name}:{job_title}:{context_id}:{intent}:{chat_context['stage']}")
+    log_event("generate_message", f"{name}:{job_title}:{context_id}:{safe_input['message_intent']}:{chat_context['stage']}")
     return {"variants": variants, "chat_context": chat_context, "fit_summary": summary}
 
 
