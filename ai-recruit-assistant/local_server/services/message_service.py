@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 try:
     from pydantic import BaseModel, Field
     PYDANTIC_AVAILABLE = True
@@ -44,22 +46,32 @@ else:
         curiosity_driven: str
 
 
+def sanitize_text_for_message(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"\b\d{2}-\d{2}\s+\d{1,2}:\d{2}\b", " ", cleaned)
+    cleaned = re.sub(r"\b\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?\b", " ", cleaned)
+    cleaned = re.sub(r"https?://\S+|www\.\S+", " ", cleaned, flags=re.I)
+    for phrase in ["沟通的职位", "沟通职位", "已读", "送达", "目前也没计划", "我们是承接的项目", "您好，我是", "你熟悉哪个引擎"]:
+        cleaned = cleaned.replace(phrase, " ")
+    return re.sub(r"\s+", " ", cleaned).strip()[:40]
+
+
 def generate_messages(payload: MessageGenerateRequest) -> MessageGenerateResponse:
-    candidate_name = payload.candidate.get("name", "候选人")
-    job_name = payload.job.get("title", "该岗位")
+    candidate_name = sanitize_text_for_message(payload.candidate.get("name", "候选人")) or "候选人"
+    job_name = sanitize_text_for_message(payload.job.get("title", "该岗位")) or "该岗位"
     priority = payload.priority
 
     project_driven = (
-        f"你好 {candidate_name}，看到你在相关项目上的经历非常契合我们 {job_name} 的核心需求，"
-        "想和你聊聊你最近一个最有代表性的项目成果。"
+        f"你好 {candidate_name}，看到你的经历和 {job_name} 有一定相关性，"
+        "想先确认下你近期是否考虑这个方向的机会。"
     )
     low_pressure = (
-        f"你好 {candidate_name}，这里有一个 {job_name} 机会与你背景较匹配，"
-        "不着急回复，有兴趣我们再约个轻松时间简单交流。"
+        f"你好 {candidate_name}，这里有一个 {job_name} 机会可以低压力了解，"
+        "如果你觉得方向不合适也没关系。"
     )
     curiosity_driven = (
-        f"你好 {candidate_name}，我们在招 {job_name}，很好奇你会如何优化类似业务场景，"
-        "方便分享一下你的思路吗？"
+        f"你好 {candidate_name}，我们在看 {job_name} 方向，"
+        "想了解下你更关注哪类项目或团队方向。"
     )
 
     if priority == "高":
