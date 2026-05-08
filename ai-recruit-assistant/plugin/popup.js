@@ -95,6 +95,17 @@ async function injectContentScript(tabId){
   });
 }
 
+async function waitForContentReady(tabId, attempts=5){
+  let lastError='';
+  for(let i=0;i<attempts;i+=1){
+    const res=await sendMessageToTab(tabId,{type:'PING'});
+    if(res && !res.__message_error && res.ok) return {ok:true};
+    lastError=res?.error||lastError;
+    await sleep(200);
+  }
+  return {ok:false,error:lastError||'content.js 注入后未响应 PING'};
+}
+
 async function sendToContent(message){
   const active=await queryActiveTab();
   if(!active.ok) return {ok:false,error:`无法获取当前标签页：${active.error}`};
@@ -115,12 +126,15 @@ async function sendToContent(message){
   const injected=await injectContentScript(tab.id);
   if(!injected.ok) return injected;
 
+  const ready=await waitForContentReady(tab.id);
+  if(!ready.ok) return {ok:false,error:`content.js 已注入但未响应，请刷新 BOSS 页面后重试：${ready.error}`};
+
   res=await sendMessageToTab(tab.id,message);
   if(res && !res.__message_error) return res;
 
   const secondError=res?.error||'';
   if(secondError && !shouldInjectForMessageError(secondError)) return {ok:false,error:secondError};
-  return {ok:false,error:'content.js 未成功注入当前页面，请刷新网页后重试'};
+  return {ok:false,error:`content.js 已注入但当前页面仍无法建立连接，请刷新 BOSS 页面后重试：${secondError||firstError||'未知原因'}`};
 }
 
 async function checkService(){

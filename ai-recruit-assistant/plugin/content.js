@@ -1,8 +1,10 @@
 console.log("[AI Recruit Assistant] content.js injected", location.href);
 
 (() => {
-  if (window.__AI_RECRUIT_ASSISTANT_CONTENT_READY__) return;
-  window.__AI_RECRUIT_ASSISTANT_CONTENT_READY__ = true;
+  const LISTENER_KEY = "__AI_RECRUIT_ASSISTANT_ON_MESSAGE__";
+  if (window[LISTENER_KEY]) {
+    try { chrome.runtime.onMessage.removeListener(window[LISTENER_KEY]); } catch (e) { console.warn("[AI Recruit Assistant] remove old listener failed", e); }
+  }
 
 const NAV_WORDS = ["职位管理", "推荐牛人", "消息", "搜索", "招聘统计", "客服", "账号", "我的客服", "面试", "直播招聘", "扫码登录", "导航", "充值", "简历", "牛人"];
 const BAD_NAMES = ["BOSS直聘", "AI招聘助手", "招聘助手", "职位管理", "推荐牛人", "消息", "搜索", "客服", "面试", "当前候选人", "未识别", "期望职位", "工作经历"];
@@ -468,7 +470,7 @@ function fillGreeting(text) {
   return { ok: false, error: "未找到可输入的聊天框", debug: { textarea_count: document.querySelectorAll("textarea").length, contenteditable_count: document.querySelectorAll("[contenteditable='true']").length, textbox_count: document.querySelectorAll("[role='textbox']").length, placeholders: Array.from(document.querySelectorAll("textarea, input")).map((el) => el.getAttribute("placeholder") || "").filter(Boolean).slice(0, 20) } };
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+const handleMessage = (message, sender, sendResponse) => {
   if (message?.type === "PING") sendResponse({ ok: true, message: "content alive", url: location.href, title: document.title });
   else if (message?.type === "DEBUG_DOM") sendResponse(debugDom());
   else if (message?.type === "EXTRACT_PAGE_CONTEXT") sendResponse(extractPageContext());
@@ -478,6 +480,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   else if (message?.type === "FILL_GREETING") sendResponse(fillGreeting(message.text || ""));
   else sendResponse({ ok: false, error: `未知消息类型: ${message?.type || "empty"}` });
   return true;
-});
+};
+
+chrome.runtime.onMessage.addListener(handleMessage);
+window[LISTENER_KEY] = handleMessage;
+window.__AI_RECRUIT_ASSISTANT_CONTENT_READY__ = true;
 
 })();
