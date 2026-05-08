@@ -5,7 +5,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   window.__AI_RECRUIT_ASSISTANT_CONTENT_READY__ = true;
 
 const NAV_WORDS = ["职位管理", "推荐牛人", "消息", "搜索", "招聘统计", "客服", "账号", "我的客服", "面试", "直播招聘", "扫码登录", "导航", "充值", "简历", "牛人"];
-const BAD_NAMES = ["BOSS直聘", "招聘助手", "职位管理", "推荐牛人", "消息", "搜索", "客服", "面试", "当前候选人", "未识别"];
+const BAD_NAMES = ["BOSS直聘", "AI招聘助手", "招聘助手", "职位管理", "推荐牛人", "消息", "搜索", "客服", "面试", "当前候选人", "未识别", "期望职位", "工作经历"];
 const JOB_SIGNALS = ["职位描述", "任职要求", "薪资", "工作地点", "岗位职责", "职位详情", "岗位要求"];
 const CANDIDATE_SIGNALS = ["在线沟通", "查看简历", "交换微信", "求职状态", "工作经历", "项目经历"];
 
@@ -102,6 +102,40 @@ function debugItem(node, reason) {
   return { text_preview: visibleText(node).slice(0, 240), className: String(node.className || "").slice(0, 160), rect: rectInfo(node), reason };
 }
 
+function elementTextLines(node) {
+  const raw = node?.innerText || node?.textContent || "";
+  return raw.split(/\n+/).map(cleanText).filter(Boolean);
+}
+
+function isExtensionDom(node) {
+  const root = node?.getRootNode?.();
+  return location.protocol === "chrome-extension:" || location.protocol === "edge-extension:" || root instanceof ShadowRoot && /ai-recruit/i.test(String(root.host?.id || root.host?.className || ""));
+}
+
+function resumeModalScore(node) {
+  const text = visibleText(node);
+  const rect = node.getBoundingClientRect();
+  const style = getComputedStyle(node);
+  let score = 0;
+  const reasons = [];
+  if (text.includes("期望职位")) { score += 30; reasons.push("包含期望职位"); }
+  if (text.includes("工作经历")) { score += 30; reasons.push("包含工作经历"); }
+  if (text.includes("教育经历")) { score += 20; reasons.push("包含教育经历"); }
+  if (/技能标签|技能/.test(text)) { score += 10; reasons.push("包含技能"); }
+  if (rect.width > 300 && rect.height > 300) { score += 10; reasons.push("面积大于300x300"); }
+  if (style.backgroundColor && style.backgroundColor !== "rgba(0, 0, 0, 0)" && style.backgroundColor !== "transparent") { score += 5; reasons.push("有面板背景"); }
+  const centerX = rect.left + rect.width / 2;
+  const viewportCenter = window.innerWidth / 2;
+  if (rect.width > 360 && Math.abs(centerX - viewportCenter) < window.innerWidth * 0.35) { score += 5; reasons.push("大面板靠近页面中部"); }
+  if (/交换微信|约面试|刚刚活跃|在职-月内到岗/.test(text)) { score += 10; reasons.push("包含候选人动作/状态"); }
+  return { score, reason: reasons.join("；") || "未命中在线简历特征" };
+}
+
+function resumeModalDebugItem(node, index) {
+  const scored = resumeModalScore(node);
+  return { index, score: scored.score, reason: scored.reason, text_preview: visibleText(node).slice(0, 260), className: String(node.className || "").slice(0, 160), rect: rectInfo(node) };
+}
+
 function isForbiddenJobTitle(title) {
   const value = cleanText(title);
   return !value || FORBIDDEN_JOB_TITLES.some((word) => value === word || value.includes(word)) || NAV_WORDS.some((word) => value === word);
@@ -181,20 +215,67 @@ function extractAge(text) {
   return m ? Number.parseInt(m[1], 10) : 0;
 }
 
-function extractExpectedPosition(text) {
-  const m = text.match(/期望(?:职位|岗位)[:：\s]*([^\n。；;]{2,50})/);
-  return cleanText(m?.[1] || "");
+function extractExpectedLineParts(text) {
+  const line = elementTextLines({ innerText: text }).find((item) => item.includes("期望职位")) || "";
+  const normalized = line.replace(/^期望职位[:：\s]*/, "").replace(/期望职位/g, " ");
+  const parts = normalized.split(/[|/｜·,，\s]+/).map(cleanText).filter(Boolean);
+  const city = parts.find((item) => /北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/.test(item)) || "";
+  const salary = parts.find((item) => /\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]/.test(item)) || "";
+  const position = parts.find((item) => item !== city && item !== salary && !/游戏|文化|艺术|娱乐|互联网|移动互联网|行业/.test(item)) || "";
+  return { expected_position: position, expected_city: city, salary_expectation: salary };
+}
+
+function extractEducation(text) {
+  return (text.match(/大专|本科|硕士|博士|研究生/) || [""])[0];
+}
+
+function extractResumeName(node, text) {
+  const topSelectors = ["[class*='name']", ".geek-name", ".resume-name", ".candidate-name", "h1", "h2", "h3"];
+  const topNodes = queryVisible(topSelectors, node)
+    .filter((el) => {
+      const value = cleanText(el.innerText || el.textContent || "");
+      const rect = el.getBoundingClientRect();
+      return value.length >= 2 && value.length <= 12 && rect.top < node.getBoundingClientRect().top + 180 && /^[\u4e00-\u9fa5]{2,6}$/.test(value) && !BAD_NAMES.includes(value);
+    })
+    .sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height);
+  const domName = cleanText(topNodes[0]?.innerText || topNodes[0]?.textContent || "");
+  if (domName) return domName;
+
+  const lines = elementTextLines(node);
+  for (const line of lines.slice(0, 12)) {
+    const direct = line.match(/^([\u4e00-\u9fa5]{2,6})$/)?.[1]
+      || line.match(/^([\u4e00-\u9fa5]{2,6})(?=\s*(男|女|\d{2}岁|本科|硕士|博士|大专|\d+年))/)?.[1];
+    if (direct && !BAD_NAMES.includes(direct)) return direct;
+  }
+  return parseName(text);
+}
+
+function resumeModalCandidates() {
+  const nodes = queryVisible([
+    "[role='dialog']", ".modal", ".dialog", ".drawer", ".resume-detail", ".geek-detail", ".candidate-detail",
+    "[class*='modal']", "[class*='dialog']", "[class*='drawer']", "[class*='resume']", "[class*='geek-detail']",
+    "section", "article", "div",
+  ]).filter((node) => {
+    if (isExtensionDom(node)) return false;
+    const text = visibleText(node);
+    if (text.length < 80 || text.length > 9000 || isNavLike(text, node)) return false;
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 280 || rect.height < 220) return false;
+    const scored = resumeModalScore(node);
+    return scored.score >= 50 && /期望职位|工作经历|教育经历|项目经历|技能标签|技能/.test(text);
+  });
+  return nodes.sort((a, b) => {
+    const sa = resumeModalScore(a).score;
+    const sb = resumeModalScore(b).score;
+    if (sb !== sa) return sb - sa;
+    const ar = a.getBoundingClientRect();
+    const br = b.getBoundingClientRect();
+    return (br.width * br.height) - (ar.width * ar.height);
+  });
 }
 
 function modalCandidateNodes() {
-  return queryVisible(["[role='dialog']", ".modal", ".dialog", ".drawer", ".resume-detail", ".geek-detail", ".candidate-detail", "[class*='modal']", "[class*='dialog']", "[class*='drawer']", "[class*='resume']", "[class*='geek-detail']"])
-    .filter((node) => {
-      const text = visibleText(node);
-      if (text.length < 50 || text.length > 8000 || isNavLike(text, node)) return false;
-      const profileSignals = ["期望职位", "工作经历", "项目经历", "教育经历", "技能标签", "查看简历", "交换微信", "约面试"].filter((word) => text.includes(word)).length;
-      return profileSignals >= 2 && (parseName(text) || /\d{2}岁/.test(text) || /\d+年/.test(text));
-    })
-    .sort((a, b) => visibleText(a).length - visibleText(b).length);
+  return resumeModalCandidates();
 }
 
 function chatHeaderCandidates() {
@@ -213,55 +294,57 @@ function selectedChatCandidates() {
     });
 }
 
-function buildCandidateFromText(text, source) {
+function buildCandidateFromText(text, source, root = document) {
   const scopedText = cleanText(text);
-  const name = parseName(scopedText);
-  const skills = keywordsFrom(scopedText, ["原画", "角色设计", "角色原画", "美宣", "游戏美术", "角色", "场景", "手绘", "厚涂", "二次元", "写实", "欧美", "日韩", "Photoshop", "PS", "SAI", "CSP", "Maya", "Blender", "ZBrush", "Substance", "UE", "Unreal", "虚幻", "Unity", "TA", "AI视频", "平面设计"]);
-  const projectKeywords = keywordsFrom(scopedText, ["项目经历", "工作经历", "游戏", "手游", "端游", "角色原画", "道具设计", "角色设计", "美宣", "商业化", "外包", "二次元", "写实", "厚涂", "动画设计"]);
+  const expected = extractExpectedLineParts(text);
+  const name = source === "resume_modal" ? extractResumeName(root, scopedText) : parseName(scopedText);
+  const skills = keywordsFrom(scopedText, ["角色原画", "SAI", "PhotoShop", "Photoshop", "csp", "CSP", "AE", "原画", "动画设计", "二维动画设计", "角色设计", "道具设计", "游戏美术", "美宣", "手绘", "厚涂", "二次元", "写实", "欧美", "日韩"]);
+  const projectKeywords = keywordsFrom(scopedText, ["游戏美术", "角色原画", "道具设计", "二维动画设计", "动画设计", "角色设计", "项目经历", "工作经历", "游戏", "手游", "端游", "美宣", "商业化", "外包"]);
   const complete = source === "resume_modal";
+  const currentTitle = expected.expected_position || (scopedText.match(/(?:当前职位|在职职位|职位)[:：\s]*([^\n。；;|]{2,40})/) || ["", ""])[1];
   return {
     name,
     age: extractAge(scopedText),
-    title: firstClean([".position", ".candidate-title", "[class*='position']"]) || "",
-    city: (scopedText.match(/北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/) || [""])[0],
+    title: currentTitle,
+    city: expected.expected_city || (scopedText.match(/北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙/) || [""])[0],
     experience_years: parseYears(scopedText),
-    education: (scopedText.match(/大专|本科|硕士|博士|研究生/) || [""])[0],
-    expected_position: extractExpectedPosition(scopedText),
-    expected_city: (scopedText.match(/期望城市[:：\s]*(北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙)/) || ["", ""])[1],
-    salary_expectation: (scopedText.match(/\d+\s*[kK][-~]\s*\d+\s*[kK]|\d+\s*万[-~]\s*\d+\s*万/) || [""])[0],
-    current_title: (scopedText.match(/(?:当前职位|在职职位|职位)[:：\s]*([^\n。；;]{2,40})/) || ["", ""])[1],
-    work_experiences: (scopedText.match(/工作经历[^]*?(?=项目经历|教育经历|技能标签|$)/)?.[0] || "").split(/(?=\d{4}|\d+年|公司|项目)/).map(cleanText).filter((x) => x.length > 8).slice(0, 8),
+    education: extractEducation(scopedText),
+    expected_position: expected.expected_position,
+    expected_city: expected.expected_city,
+    salary_expectation: expected.salary_expectation || (scopedText.match(/\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK][-~]\s*\d+\s*[kK]|\d+\s*万[-~]\s*\d+\s*万/) || [""])[0],
+    current_title: currentTitle,
+    work_experiences: (scopedText.match(/工作经历[^]*?(?=项目经历|教育经历|技能标签|技能|$)/)?.[0] || "").split(/(?=\d{4}|\d+年|公司|项目)/).map(cleanText).filter((x) => x.length > 8).slice(0, 8),
     project_keywords: projectKeywords,
     skills,
     raw_text: complete ? scopedText.slice(0, 5000) : scopedText.slice(0, 600),
     source_url: location.href,
     source,
     profile_complete: complete,
-    warning: complete ? "" : "请点击候选人头像/姓名打开在线简历后再分析，可提升评分准确度",
+    warning: complete ? "" : "当前候选人信息不完整，请打开在线简历后再分析",
     last_active: (scopedText.match(/最近活跃|今日活跃|在线|刚刚活跃/) || [""])[0],
     contact_status: "未联系",
   };
 }
 
 function extractCandidate() {
-  for (const node of modalCandidateNodes()) {
-    const candidate = buildCandidateFromText(visibleText(node), "resume_modal");
+  for (const node of resumeModalCandidates()) {
+    const candidate = buildCandidateFromText(node.innerText || node.textContent || "", "resume_modal", node);
     if (candidate.name) return { ok: true, candidate, warning: "", error: "" };
   }
   const header = chatHeaderCandidates()[0];
   if (header) {
-    const candidate = buildCandidateFromText(visibleText(header), "chat_header");
-    if (candidate.name) return { ok: true, candidate, warning: "当前候选人信息不完整，建议打开在线简历/候选人详情后再分析", error: "" };
+    const candidate = buildCandidateFromText(header.innerText || header.textContent || "", "chat_header", header);
+    if (candidate.name) return { ok: true, candidate, warning: "当前候选人信息不完整，请打开在线简历后再分析", error: "" };
   }
   const selected = selectedChatCandidates()[0];
   if (selected) {
-    const candidate = buildCandidateFromText(visibleText(selected), "selected_chat_item");
+    const candidate = buildCandidateFromText(selected.innerText || selected.textContent || "", "selected_chat_item", selected);
     candidate.raw_text = candidate.name;
     candidate.profile_complete = false;
-    candidate.warning = "请点击候选人头像/姓名打开在线简历后再分析，可提升评分准确度";
-    if (candidate.name) return { ok: true, candidate, warning: "当前候选人信息不完整，建议打开在线简历/候选人详情后再分析", error: "" };
+    candidate.warning = "当前候选人信息不完整，请打开在线简历后再分析";
+    if (candidate.name) return { ok: true, candidate, warning: "当前候选人信息不完整，请打开在线简历后再分析", error: "" };
   }
-  return { ok: false, candidate: { name: "", raw_text: "", source: "unknown", profile_complete: false, warning: "请点击候选人头像/姓名打开在线简历后再分析，可提升评分准确度" }, warning: "", error: "未识别候选人姓名，请打开具体候选人聊天窗口或候选人详情页" };
+  return { ok: false, candidate: { name: "", raw_text: "", source: "unknown", profile_complete: false, warning: "当前候选人信息不完整，请打开在线简历后再分析" }, warning: "", error: "未识别候选人姓名，请打开具体候选人聊天窗口或候选人详情页" };
 }
 
 function chatRootCandidates() {
@@ -337,6 +420,7 @@ function debugDom() {
     body_text_length: visibleText(document.body).length,
     visible_blocks: blocks,
     input_candidates: inputCandidates,
+    resume_modal_candidates: resumeModalCandidates().slice(0, 10).map((node, index) => resumeModalDebugItem(node, index)),
     modal_candidates: modalCandidateNodes().slice(0, 10).map((node) => debugItem(node, "resume_modal_signal")),
     chat_job_card_candidates: chatJobCardCandidates().slice(0, 10).map((node) => debugItem(node, "chat_job_card_signal")),
     chat_header_candidates: chatHeaderCandidates().slice(0, 10).map((node) => debugItem(node, "chat_header_signal")),
