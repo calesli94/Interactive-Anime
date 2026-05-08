@@ -26,7 +26,8 @@ function notify(msg, type='info'){
 }
 function feedback(msg, type='info'){ notify(msg, type); }
 function textOrDash(v){ return v ? String(v) : '-'; }
-function isReliableContext(){ return ['chat_job_card','manual'].includes(state.job?.source) && state.candidate?.source === 'resume_modal' && state.candidate?.profile_complete !== false; }
+function hasJobDetail(){ return Boolean(state.job?.jd_complete || state.job?.description || (state.job?.requirements||[]).length || (state.job?.responsibilities||[]).length); }
+function isReliableContext(){ return Boolean(state.job?.title) && hasJobDetail() && state.candidate?.profile_complete !== false; }
 function renderReliability(){
   const jobSource=state.job?.source||'-';
   const candidateSource=state.candidate?.source||'-';
@@ -169,6 +170,12 @@ function renderJob(){
   $('job-city').textContent=textOrDash(job.city);
   $('job-salary').textContent=textOrDash(job.salary);
   $('job-description-preview').textContent=textOrDash((job.description||job.raw_text||'').slice(0,120));
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('job-source-detail', textOrDash(job.source));
+  set('job-jd-complete', job.jd_complete?'完整':'不完整');
+  set('job-warning', job.warning || (job.title&&!hasJobDetail()?'已识别岗位名称，但缺少岗位职责和任职要求，请补充岗位要求后再分析。':''));
+  const desc=$('job-description-manual'); if(desc && !desc.value && job.description) desc.value=job.description;
+  const req=$('job-requirements-manual'); if(req && !req.value && (job.requirements||[]).length) req.value=(job.requirements||[]).join('\n');
   renderReliability();
 }
 
@@ -229,13 +236,29 @@ function jobConfigForApi(){
     job_title: job.title||'',
     city: job.city||'',
     salary: job.salary||'',
-    description: job.description||job.raw_text||'',
+    description: job.description||'',
+    responsibilities: job.responsibilities||[],
+    requirements: job.requirements||[],
     required_skills: job.requirements||job.keywords||[],
-    preferred_keywords: job.keywords||job.requirements||[],
+    preferred_keywords: job.preferred_keywords||job.keywords||job.requirements||[],
+    jd_complete: Boolean(job.jd_complete || job.description || (job.requirements||[]).length || (job.responsibilities||[]).length),
     source: job.source||'',
     raw_text: job.raw_text||'',
     urgency:'high',
   };
+}
+
+async function saveJobConfig(){
+  const title=(state.job?.title||$('job-title')?.textContent||'').trim();
+  const description=($('job-description-manual')?.value||'').trim();
+  const reqText=($('job-requirements-manual')?.value||'').trim();
+  if(!title){ feedback('请先刷新并识别岗位名称'); return; }
+  if(!description && !reqText){ feedback('请粘贴岗位职责或任职要求后再保存'); return; }
+  const requirements=reqText.split(/\n|；|;/).map((x)=>x.trim()).filter(Boolean);
+  state.job={...(state.job||{}),title,description,requirements,responsibilities:description.split(/\n|；|;/).map((x)=>x.trim()).filter(Boolean),preferred_keywords:requirements,jd_complete:true,source:'manual',warning:''};
+  await chrome.storage.local.set({lastJob:state.job});
+  renderJob();
+  feedback('岗位配置已保存，将用于候选人适配分析');
 }
 
 async function track(event_type,payload={}){
@@ -254,6 +277,8 @@ async function analyzeCandidate(){
   manualCandidateIfNeeded();
   renderCandidate();
   if(!state.candidate?.name){ feedback('未识别候选人姓名，请确认当前页面为候选人详情或聊天页'); return; }
+  if(!state.job?.title){ feedback('未识别当前沟通岗位，请先刷新上下文'); return; }
+  if(!hasJobDetail()) feedback('当前仅有岗位名称，缺少岗位职责/JD，本次分析可信度低，建议补充岗位要求后重新分析');
   try{
     const data=await api('/api/priority/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,job_config:jobConfigForApi(),context_id:state.contextId})});
     state.priorityResult={...data,context_id:state.contextId};
@@ -263,6 +288,14 @@ async function analyzeCandidate(){
     $('recommended-action').textContent=textOrDash(data.recommended_action);
     $('recommended-mode').textContent=textOrDash(data.recommended_mode);
     $('recommended-reason').textContent=(data.reasons||[]).join('；');
+    $('fit-result').textContent=textOrDash(data.fit_result);
+    $('message-intent').textContent=textOrDash(data.message_intent);
+    $('matched-points').textContent=(data.matched_points||[]).join('；')||'-';
+    $('missing-points').textContent=(data.missing_points||[]).join('；')||'-';
+    $('risk-points').textContent=(data.risk_points||[]).join('；')||'-';
+    $('score-reliability').textContent=textOrDash(data.reliability);
+    const genBtn=$('generate-message-btn');
+    if(genBtn) genBtn.textContent=data.message_intent==='reject'?'生成拒绝话术':(data.message_intent==='connect'?'生成建立链接话术':'生成话术');
     if(state.candidate?.profile_complete===false){
       $('candidate-priority').textContent='信息不完整，建议打开在线简历后重新分析';
     }
@@ -401,6 +434,7 @@ function bind(){
   $('refresh-job-btn').onclick=refreshJob;
   $('analyze-btn').onclick=analyzeCandidate;
   $('generate-message-btn').onclick=generateMessages;
+  $('save-job-config-btn').onclick=saveJobConfig;
   $('save-mode-btn').onclick=saveMode;
   $('mark-quality-btn').onclick=()=>markCandidate('candidate_starred','已标记为优质候选人');
   $('mark-greeted-btn').onclick=()=>markCandidate('manual_sent_marked','已标记已打招呼');

@@ -132,100 +132,176 @@ def _candidate_text(candidate: dict) -> str:
     return " ".join(parts)
 
 
+def _job_text(job_config: dict) -> str:
+    parts: list[str] = []
+    for key in ["title", "job_title", "description", "raw_text"]:
+        if job_config.get(key):
+            parts.append(str(job_config.get(key)))
+    for key in ["responsibilities", "requirements", "preferred_keywords", "required_skills"]:
+        value = job_config.get(key) or []
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        else:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def _infer_job_core_requirements(title: str, job_text: str) -> list[tuple[str, list[str]]]:
+    source = f"{title} {job_text}"
+    groups: list[tuple[str, list[str]]] = []
+    if _contains_any(source, ["技术美术", "TA", "Shader", "Unity", "UE", "材质", "工具链"]):
+        groups.extend([
+            ("Unity/UE 引擎经验", ["Unity", "UE", "Unreal", "虚幻", "引擎"]),
+            ("Shader/材质能力", ["Shader", "着色器", "材质", "渲染"]),
+            ("特效或工具链经验", ["特效", "工具链", "TA", "技术美术", "Houdini"]),
+        ])
+    if _contains_any(source, ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头"]):
+        groups.extend([
+            ("AI视频制作经验", ["AI视频", "视频", "短视频", "生成视频"]),
+            ("ComfyUI/Stable Diffusion 工具经验", ["ComfyUI", "Stable Diffusion", "SD", "AI绘画", "AI工具"]),
+            ("剪辑/镜头语言能力", ["剪辑", "镜头", "分镜", "成片", "AE", "Premiere"]),
+        ])
+    if _contains_any(source, ["原画", "角色美宣", "角色设计", "美宣"]):
+        groups.extend([
+            ("角色原画/角色设计经验", ["原画", "角色原画", "角色设计", "角色"]),
+            ("美宣/游戏项目经验", ["美宣", "游戏美术", "游戏", "项目经历"]),
+            ("PS/SAI/CSP 绘画工具", ["Photoshop", "PhotoShop", "PS", "SAI", "CSP", "csp"]),
+        ])
+    # Extract explicit keywords from JD so non-standard roles still compare against requirements.
+    explicit = []
+    for word in ["Unity", "UE", "Unreal", "虚幻", "Shader", "材质", "工具链", "特效", "TA", "技术美术", "AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头", "原画", "角色原画", "角色设计", "美宣", "Photoshop", "SAI", "CSP", "AE"]:
+        if _contains_any(source, [word]):
+            explicit.append(word)
+    if explicit:
+        groups.append(("岗位显性技能关键词", explicit))
+    return groups
+
+
 def _strict_art_score(candidate: dict, job_config: dict) -> dict:
     title = str(job_config.get("title") or job_config.get("job_title") or "").strip()
-    text = _candidate_text(candidate)
-    reasons: list[str] = []
-    score = 20
-    severe_risk = False
+    c_text = _candidate_text(candidate)
+    j_text = _job_text(job_config)
+    jd_complete = bool(job_config.get("jd_complete") or job_config.get("description") or job_config.get("requirements") or job_config.get("responsibilities"))
+    matched_points: list[str] = []
+    missing_points: list[str] = []
+    risk_points: list[str] = []
 
     if not title:
         return {
-            "score": 45,
-            "level": "B",
-            "priority": "中",
+            "score": 35,
+            "level": "C",
+            "fit_result": "weak_fit",
+            "priority": "低",
             "recommended_action": "请先确认岗位信息",
-            "recommended_mode": "assist",
-            "quota_type": "normal",
-            "message_strategy": "信息补全型",
-            "reasons": ["扣分：缺少当前沟通岗位，无法做岗位约束评分"],
+            "recommended_mode": "observe",
+            "message_intent": "ask_more",
+            "reasons": ["缺失：未识别当前沟通岗位"],
+            "matched_points": [],
+            "missing_points": ["缺失：未识别当前沟通岗位"],
+            "risk_points": [],
+            "reliability": "low",
             "candidate_starred": False,
         }
 
-    if len(text.strip()) < 80 or candidate.get("profile_complete") is False:
-        reasons.append("扣分：候选人在线简历信息不完整")
+    requirement_groups = _infer_job_core_requirements(title, j_text)
+    if not jd_complete:
+        matched = []
+        for label, words in requirement_groups:
+            hits = [word for word in words if _contains_any(c_text, [word])]
+            if hits:
+                matched.append(f"匹配：候选人有{label}相关信号（{'、'.join(hits[:3])}）")
+        missing = ["缺失：当前页面仅识别到岗位名称，未读取岗位职责/任职要求"]
+        score = min(60, 35 + len(matched) * 8)
+        level = _cap_level(_level_from_score(score), "B")
+        return {
+            "score": score,
+            "level": level,
+            "fit_result": "possible_fit" if matched else "weak_fit",
+            "priority": "中" if matched else "低",
+            "recommended_action": "补充岗位要求后重新分析",
+            "recommended_mode": "assist",
+            "message_intent": "ask_more",
+            "reasons": matched + missing,
+            "matched_points": matched,
+            "missing_points": missing,
+            "risk_points": [],
+            "reliability": "low",
+            "candidate_starred": False,
+        }
 
-    match_groups = [
-        ("原画/角色原画/角色设计", ["原画", "角色原画", "角色设计"]),
-        ("角色/场景游戏美术", ["游戏美术", "角色", "场景"]),
-        ("美宣方向", ["美宣", "宣传图", "角色美宣"]),
-        ("绘画风格", ["手绘", "厚涂", "二次元", "写实", "欧美", "日韩"]),
-        ("绘画工具", ["Photoshop", "PS", "SAI", "CSP"]),
-        ("项目美术职责", ["项目经历", "工作经历", "道具设计", "商业化", "手游", "端游", "游戏"]),
-    ]
-    missing: list[str] = []
-    for label, words in match_groups:
-        hits = [word for word in words if _contains_any(text, [word])]
+    for label, words in requirement_groups:
+        hits = [word for word in words if _contains_any(c_text, [word])]
         if hits:
-            score += 10 if label != "绘画工具" else 8
-            reasons.append(f"匹配：{label}（{ '、'.join(hits[:4]) }）")
+            matched_points.append(f"匹配：候选人覆盖{label}（{'、'.join(hits[:4])}）")
         else:
-            missing.append(label)
+            missing_points.append(f"缺失：未看到{label}")
 
-    risk_words = ["AI视频", "技术美术", "TA", "平面设计", "运营", "行政", "程序", "开发", "客服", "销售", "非美术"]
-    risks = [word for word in risk_words if _contains_any(text, [word])]
-    if risks:
-        score -= 25
-        severe_risk = True
-        reasons.append(f"扣分：岗位要求原画/角色美宣，但候选人偏{'、'.join(risks[:4])}")
+    # Directional mismatch risks.
+    if _contains_any(f"{title} {j_text}", ["技术美术", "TA", "Shader", "Unity", "UE"]):
+        if _contains_any(c_text, ["原画", "角色原画", "平面设计"]) and not _contains_any(c_text, ["TA", "技术美术", "Shader", "Unity", "UE", "Unreal", "工具链"]):
+            risk_points.append("风险：岗位偏技术美术TA，但候选人主要经历偏纯美术/原画，未看到TA、Shader或引擎经验")
+    if _contains_any(f"{title} {j_text}", ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头"]):
+        if not _contains_any(c_text, ["AI视频", "视频", "剪辑", "ComfyUI", "Stable Diffusion", "AI工具", "镜头", "分镜", "AE"]):
+            risk_points.append("风险：岗位是AI视频方向，但候选人未体现AI视频、剪辑、AI工具或镜头语言经验")
+    if _contains_any(f"{title} {j_text}", ["角色美宣", "角色设计", "原画"]):
+        if _contains_any(c_text, ["技术美术", "TA", "程序", "开发", "运营", "行政"]) and not _contains_any(c_text, ["角色原画", "角色设计", "美宣", "Photoshop", "SAI", "CSP"]):
+            risk_points.append("风险：岗位偏角色美宣/角色设计，但候选人主要方向不是角色原画或美宣")
+    if _contains_any(c_text, ["行政", "运营", "客服", "销售", "财务"]):
+        risk_points.append("风险：候选人出现明显非岗位方向经历")
 
-    if missing:
-        score -= min(25, len(missing) * 5)
-        reasons.append(f"缺失：未看到{'、'.join(missing[:4])}")
-    if not _contains_any(text, ["作品", "作品集", "链接", "ArtStation", "站酷", "米画师"]):
-        reasons.append("风险：未看到完整项目作品链接")
-
-    if "原画" in title or "角色美宣" in title or "角色设计" in title:
-        if not _contains_any(text, ["原画", "角色原画", "角色设计", "美宣", "游戏美术", "角色"]):
-            score = min(score, 45)
-            severe_risk = True
-            reasons.append("扣分：当前岗位是原画/角色美宣/角色设计，但简历缺少核心方向关键词")
-
-    score = max(0, min(score, 100))
+    total = max(1, len(requirement_groups))
+    match_ratio = len(matched_points) / total
+    score = int(30 + match_ratio * 60 - min(30, len(risk_points) * 20) - min(15, len(missing_points) * 3))
+    score = max(0, min(100, score))
+    if risk_points and match_ratio < 0.5:
+        score = min(score, 40)
     level = _level_from_score(score)
-    if len(text.strip()) < 80 or candidate.get("profile_complete") is False:
-        level = _cap_level(level, "B")
-        score = min(score, 69)
-    if severe_risk:
-        level = _cap_level(level, "B")
-        score = min(score, 65)
-    if not title:
-        level = _cap_level(level, "B")
 
-    priority = _priority_from_level(level)
-    if not title or level == "B":
-        priority = "中"
-    if level in {"C", "D"}:
-        priority = "低"
-
-    if not title:
-        action = "请先确认岗位信息"
-    elif len(text.strip()) < 80 or candidate.get("profile_complete") is False:
-        action = "请打开在线简历后重新分析"
+    if score >= 85 and not risk_points:
+        fit_result = "strong_fit"
+        message_intent = "connect"
+        action = "建议建立链接"
+        mode = "manual"
+    elif score >= 70 and not risk_points:
+        fit_result = "strong_fit"
+        message_intent = "connect"
+        action = "建议建立链接"
+        mode = "manual"
+    elif score >= 55:
+        fit_result = "possible_fit"
+        message_intent = "ask_more"
+        action = "补充确认关键能力"
+        mode = "assist"
+    elif score > 40:
+        fit_result = "weak_fit"
+        message_intent = "observe"
+        action = "低压力观察，确认关键能力后再推进"
+        mode = "observe"
     else:
-        action = _recommended_action_from_level(level)
+        fit_result = "not_fit"
+        message_intent = "reject"
+        action = "不建议继续推进"
+        mode = "none"
 
-    mode = "manual" if level in {"S", "A"} else ("assist" if level == "B" else "observe")
+    priority = "高" if level in {"S", "A"} and message_intent == "connect" else ("中" if level == "B" else "低")
+    reliability = "high" if jd_complete and candidate.get("profile_complete") else "medium"
+    reasons = matched_points + missing_points + risk_points
     return {
         "score": score,
         "level": level,
+        "fit_result": fit_result,
         "priority": priority,
         "recommended_action": action,
         "recommended_mode": mode,
+        "message_intent": message_intent,
         "quota_type": "priority" if priority == "高" else "normal",
-        "message_strategy": "项目驱动型" if level in {"S", "A"} else "信息补全型",
-        "reasons": reasons or ["扣分：未读取到足够岗位匹配信息"],
-        "candidate_starred": bool(level in {"S", "A"} and not severe_risk),
+        "message_strategy": fit_result,
+        "reasons": reasons,
+        "matched_points": matched_points,
+        "missing_points": missing_points,
+        "risk_points": risk_points,
+        "reliability": reliability,
+        "candidate_starred": bool(message_intent == "connect" and level in {"S", "A"} and not risk_points),
     }
 
 
@@ -401,29 +477,49 @@ def message_generate(payload: dict) -> dict:
     job_title = str(job_config.get("title") or job_config.get("job_title") or "").strip()
     if not name or not job_title:
         raise HTTPException(status_code=400, detail="缺少候选人姓名或岗位信息，无法生成精准话术")
-    points = _matching_points(candidate, job_title)
-    if not points:
-        points = ["简历中暂未提取到明确匹配点，建议先打开在线简历确认"]
-    point_text = "，也".join(points)
-    strategy = priority_result.get("message_strategy", "项目驱动型")
-    variants = [
-        {
-            "strategy": "项目驱动型",
-            "message": f"{name}你好，看到你有{point_text}。我们当前沟通的是{job_title}岗位，方向上和你的相关经历比较接近，想和你简单确认下近期是否考虑这类机会？",
-            "reason": f"绑定当前候选人{name}、当前沟通岗位{job_title}和简历匹配点：{'、'.join(points)}",
-        },
-        {
-            "strategy": "低压力型",
-            "message": f"{name}你好，打扰一下。我这边当前沟通的是{job_title}岗位，看到你简历里有{point_text}，所以想先和你低压力同步下岗位方向；如果你近期不考虑也没关系。",
-            "reason": "保留具体岗位和真实匹配点，同时降低回复压力",
-        },
-        {
-            "strategy": "确认意向型",
-            "message": f"{name}你好，看到你简历中的{point_text}和{job_title}有一定关联。我想先确认下，你现在是否还关注原画/角色美宣/角色设计这类机会？如果方向合适我再发你岗位细节。",
-            "reason": f"当前推荐策略：{strategy}，先确认候选人对当前岗位的真实意向",
-        },
-    ]
-    log_event("generate_message", f"{name}:{job_title}:{context_id}")
+
+    intent = str(priority_result.get("message_intent") or "ask_more")
+    matched = priority_result.get("matched_points") or []
+    missing = priority_result.get("missing_points") or []
+    risks = priority_result.get("risk_points") or []
+    match_text = "；".join(str(x).replace("匹配：", "") for x in matched[:2]) or "目前简历里有部分相关经历"
+    missing_text = "；".join(str(x).replace("缺失：", "") for x in missing[:2]) or "关键能力细节"
+    risk_text = "；".join(str(x).replace("风险：", "") for x in risks[:2]) or "当前方向匹配度有限"
+
+    if intent == "connect":
+        variants = [
+            {
+                "strategy": "建立链接型",
+                "message": f"{name}你好，看到你简历里{match_text}，和我们当前沟通的{job_title}岗位比较贴近。想和你简单同步下岗位项目方向，也了解下你近期是否考虑这类机会？",
+                "reason": "候选人与当前岗位核心要求匹配，建议建立链接并轻推进沟通",
+            }
+        ]
+    elif intent == "reject":
+        variants = [
+            {
+                "strategy": "礼貌拒绝型",
+                "message": f"{name}你好，感谢你愿意沟通。我们对照了当前{job_title}岗位要求，现阶段{risk_text}，这次可能先不继续推进。后续如果有更贴合你方向的机会，我再和你联系，祝你求职顺利。",
+                "reason": "当前候选人与岗位核心要求不匹配，生成暂不推进话术，避免继续邀约",
+            }
+        ]
+    elif intent == "observe":
+        variants = [
+            {
+                "strategy": "低压力观察型",
+                "message": f"{name}你好，我看了下你和{job_title}岗位有一些相关点，但还需要确认{missing_text}。如果你方便，可以简单说下这部分经验；不合适也没关系，我们先低压力了解。",
+                "reason": "候选人弱匹配，适合低压力确认，不强推",
+            }
+        ]
+    else:
+        variants = [
+            {
+                "strategy": "补充确认型",
+                "message": f"{name}你好，目前我看到的信息还不够完整。我们当前沟通的是{job_title}岗位，想重点确认下{missing_text}。你方便补充下相关项目或工具经验吗？",
+                "reason": "岗位JD或候选人信息不足，需要先补充确认关键能力",
+            }
+        ]
+
+    log_event("generate_message", f"{name}:{job_title}:{context_id}:{intent}")
     return {"variants": variants}
 
 

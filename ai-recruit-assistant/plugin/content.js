@@ -18,7 +18,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   const NAV_WORDS = ["职位管理", "推荐牛人", "深度搜索", "搜索", "沟通", "牛人管理", "项目外包", "直播招聘", "招聘规范", "我的客服", "招聘数据", "VIP", "面试", "账号", "导航", "更多", "客服", "消息", "招聘统计", "扫码登录", "充值"];
   const BAD_NAMES = ["BOSS直聘", "AI招聘助手", "职位管理", "推荐牛人", "沟通", "搜索", "当前候选人", "期望职位", "工作经历", "教育经历", "招聘规范", "我的客服", "面试", "招聘助手", "在线简历", "简历", "未识别"];
   const JOB_FORBIDDEN = [...NAV_WORDS, "道具", "意向沟通", "牛人", "人才", "聊天"];
-  const JOB_AREA_SIGNALS = ["职位描述", "任职要求", "岗位职责", "工作地点", "薪资", "发布职位", "招聘中", "沟通的职位", "沟通职位", "沟通的岗位"];
+  const JOB_AREA_SIGNALS = ["职位描述", "岗位职责", "任职要求", "技能要求", "加分项", "工作内容", "职位要求", "你将负责", "我们希望你", "工作地点", "薪资", "发布职位", "招聘中", "沟通的职位", "沟通职位", "沟通的岗位", "项目方向"];
   const RESUME_SIGNALS = ["期望职位", "工作经历", "教育经历", "项目经历", "技能标签", "技能", "在职", "到岗", "刚刚活跃", "今日活跃", "交换微信", "约面试"];
   const SKILL_WORDS = ["UE", "Unreal", "虚幻", "Maya", "ZBrush", "Substance", "Blender", "原画", "角色原画", "角色设计", "场景", "道具设计", "动画设计", "二维动画设计", "特效", "TA", "技术美术", "SAI", "Photoshop", "PhotoShop", "CSP", "csp", "AE", "AI视频", "AI绘画", "AI工具", "游戏美术", "美宣"];
   const PROJECT_WORDS = ["3A", "次世代", "手游", "端游", "游戏美术", "角色", "场景", "道具", "美宣", "外包", "商业化皮肤", "角色原画", "道具设计", "二维动画设计"];
@@ -157,7 +157,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   }
 
   function emptyJob(source = "unknown") {
-    return { title: "", city: "", salary: "", description: "", requirements: [], keywords: [], raw_text: "", source };
+    return { title: "", city: "", salary: "", description: "", responsibilities: [], requirements: [], preferred_keywords: [], keywords: [], raw_text: "", source, jd_complete: false, warning: "" };
   }
 
   function emptyCandidate(source = "unknown") {
@@ -252,17 +252,31 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return candidates.sort((a, b) => b.score - a.score || textOf(a.node).length - textOf(b.node).length);
   }
 
+  function splitJobDetail(rawText) {
+    const lines = linesOf(rawText).filter((line) => !includesAny(line, NAV_WORDS));
+    const responsibilities = lines.filter((line) => /岗位职责|工作内容|你将负责|负责/.test(line)).slice(0, 12);
+    const requirements = lines.filter((line) => /任职要求|技能要求|职位要求|我们希望你|要求|熟悉|经验|能力/.test(line)).slice(0, 16);
+    const preferred_keywords = uniq([...safeKeywords(rawText, [...SKILL_WORDS, ...PROJECT_WORDS]), ...lines.filter((line) => /加分项|优先|项目方向/.test(line)).slice(0, 8)]);
+    return { responsibilities, requirements, preferred_keywords };
+  }
+
   function buildJobFromCandidate(item, source) {
     const rawText = textOf(item.node);
+    const detail = splitJobDetail(rawText);
+    const jdComplete = source !== "chat_job_card" && Boolean(rawText && (detail.responsibilities.length || detail.requirements.length || /职位描述|岗位职责|任职要求|技能要求|加分项|工作内容|职位要求|你将负责|我们希望你/.test(rawText)));
     return {
       title: item.title,
       city: (rawText.match(CITY_RE) || [""])[0],
       salary: (rawText.match(/\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]\s*[-~]\s*\d+\s*[kK]|\d+\s*万\s*[-~]\s*\d+\s*万/) || [""])[0],
-      description: source === "chat_job_card" ? "" : rawText.slice(0, 1200),
-      requirements: source === "chat_job_card" ? [] : linesOf(rawText).filter((line) => /要求|经验|熟悉|负责|岗位|职责/.test(line) && !includesAny(line, NAV_WORDS)).slice(0, 12),
+      description: jdComplete ? rawText.slice(0, 1600) : "",
+      responsibilities: jdComplete ? detail.responsibilities : [],
+      requirements: jdComplete ? detail.requirements : [],
+      preferred_keywords: jdComplete ? detail.preferred_keywords : [],
       keywords: safeKeywords(rawText, [...SKILL_WORDS, ...PROJECT_WORDS]),
       raw_text: rawText,
-      source,
+      source: jdComplete ? "job_detail" : source,
+      jd_complete: jdComplete,
+      warning: jdComplete ? "" : "当前页面仅识别到岗位名称，未识别岗位职责和任职要求，请打开该岗位详情页或手动补充岗位要求",
     };
   }
 
@@ -271,11 +285,14 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     try {
       const cards = chatJobCardCandidates();
       debug.chat_job_card_candidates = cards.slice(0, 10).map((item) => ({ ...debugNode(item.node, item.score, item.reason), parsed_title: item.title }));
-      if (cards[0]) return { ok: true, job: buildJobFromCandidate(cards[0], "chat_job_card"), error: "", debug };
-
       const areas = jobAreaCandidates();
       debug.job_area_candidates = areas.slice(0, 10).map((item) => ({ ...debugNode(item.node, item.score, item.reason), parsed_title: item.title }));
-      if (areas[0]) return { ok: true, job: buildJobFromCandidate(areas[0], "job_area"), error: "", debug };
+      if (areas[0]) {
+        const job = buildJobFromCandidate(areas[0], "job_area");
+        if (!job.title && cards[0]) job.title = cards[0].title;
+        return { ok: true, job, error: "", debug };
+      }
+      if (cards[0]) return { ok: true, job: buildJobFromCandidate(cards[0], "chat_job_card"), error: "", debug };
 
       return { ok: false, job: emptyJob(), error: "未识别当前沟通岗位", debug };
     } catch (e) {
