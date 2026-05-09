@@ -19,13 +19,17 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   const CHAT_LIST_CLASS_BLACKLIST = ["chat-user", "user-container", "user-list", "chat-top-filter", "chat-message-filter", "chat-message-filter-left", "boss-menu", "sidebar", "nav", "menu", "filter", "search", "recommend", "job-list"];
   const CHAT_LIST_LAYOUT_CLASS_BLACKLIST = ["side", "sidebar", "nav", "menu", "filter", "search", "recommend", "job-list"];
   const CHAT_LIST_TEXT_BLACKLIST = ["全部职位", "未读", "牛人已读未回", "批量", "职位管理", "推荐牛人", "深度搜索", "搜索", "意向沟通", "牛人管理", "我的客服", "招聘规范"];
-  const BAD_NAMES = ["BOSS直聘", "AI招聘助手", "职位管理", "推荐牛人", "沟通", "搜索", "当前候选人", "期望职位", "工作经历", "教育经历", "招聘规范", "我的客服", "面试", "招聘助手", "在线简历", "简历", "未识别"];
+  const BAD_NAMES = ["BOSS直聘", "AI招聘助手", "职位管理", "推荐牛人", "沟通", "搜索", "当前候选人", "期望职位", "工作经历", "教育经历", "招聘规范", "我的客服", "面试", "招聘助手", "在线简历", "简历", "未识别", "本科", "大专", "硕士", "博士", "高中", "中专", "招聘", "游戏", "上海", "北京", "广州", "深圳", "杭州"];
+  const NAME_FORBIDDEN_WORDS = ["本科", "大专", "硕士", "博士", "高中", "中专", "10年以上", "5年", "3年", "1年", "39岁", "28岁", "23岁", "刚刚活跃", "今日活跃", "3日内活跃", "在线", "离职-随时到岗", "在职-月内到岗", "期望职位", "工作经历", "教育经历", "招聘", "游戏", "上海", "北京", "广州", "深圳", "杭州"];
   const JOB_FORBIDDEN = [...NAV_WORDS, "道具", "意向沟通", "牛人", "人才", "聊天"];
   const JOB_AREA_SIGNALS = ["职位描述", "岗位职责", "任职要求", "技能要求", "加分项", "工作内容", "职位要求", "你将负责", "我们希望你", "工作地点", "薪资", "发布职位", "招聘中", "沟通的职位", "沟通职位", "沟通的岗位", "项目方向"];
   const RESUME_SIGNALS = ["期望职位", "工作经历", "教育经历", "项目经历", "技能标签", "技能", "在职", "到岗", "刚刚活跃", "今日活跃", "交换微信", "约面试"];
-  const SKILL_WORDS = ["UE", "Unreal", "虚幻", "Maya", "ZBrush", "Substance", "Blender", "原画", "角色原画", "角色设计", "场景", "道具设计", "动画设计", "二维动画设计", "特效", "TA", "技术美术", "SAI", "Photoshop", "PhotoShop", "CSP", "csp", "AE", "AI视频", "AI绘画", "AI工具", "游戏美术", "美宣"];
-  const PROJECT_WORDS = ["3A", "次世代", "手游", "端游", "游戏美术", "角色", "场景", "道具", "美宣", "外包", "商业化皮肤", "角色原画", "道具设计", "二维动画设计"];
-  const CITY_RE = /北京|上海|广州|深圳|杭州|成都|武汉|南京|苏州|厦门|西安|重庆|天津|长沙|郑州|合肥|青岛|宁波|佛山|东莞/;
+  const SKILL_WORDS = ["招聘", "高招", "猎头", "高端招聘", "人才地图", "Mapping", "人才资源", "HRBP", "人力资源", "UE", "Unreal", "虚幻", "Maya", "ZBrush", "Substance", "Blender", "原画", "角色原画", "角色设计", "场景", "场景设计", "道具设计", "动画", "动画设计", "二维动画设计", "分镜", "特效", "3D", "3D设计", "TA", "技术美术", "AIGC", "SAI", "Photoshop", "PhotoShop", "PS", "CSP", "csp", "AE", "Spine", "Unity", "Shader", "Python", "ComfyUI", "Stable Diffusion", "SD", "Midjourney", "剪辑", "AI视频", "AI绘画", "AI工具", "游戏美术", "美宣"];
+  const PROJECT_WORDS = ["游戏", "趣加", "趣加科技", "网易", "网易游戏", "三七互娱", "3A", "次世代", "手游", "端游", "游戏美术", "角色", "场景", "道具", "美宣", "外包", "商业化皮肤", "角色原画", "道具设计", "二维动画设计", "AI视频", "AIGC", "高端招聘", "人才地图", "Mapping"];
+  const CITY_RE = /上海|北京|广州|深圳|杭州|成都|武汉|苏州|南京|重庆|厦门|长沙|西安|天津|合肥|郑州|远程|青岛|宁波|佛山|东莞/;
+  const SALARY_RE = /(?:面议|\d+\s*[kK]\s*[-~—至]\s*\d+\s*[kK](?:\s*[·・]\s*\d+薪)?|\d+\s*[-~—至]\s*\d+\s*[kK](?:\s*[·・]\s*\d+薪)?|\d+\s*万\s*[-~—至]\s*\d+\s*万)/;
+  const JOB_EXP_RE = /(?:经验不限|\d+\s*[-~—至]\s*\d+\s*年|\d+\s*年以上|\d+\s*年)/;
+  const EDU_REQ_RE = /学历不限|大专|本科|硕士|博士|高中|中专/;
 
   function cleanText(value) {
     return String(value || "").replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
@@ -224,44 +228,68 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return m ? Number.parseInt(m[1], 10) : null;
   }
 
-  function parseYears(text) {
-    const source = String(text || "");
+  function parseExperience(text) {
+    const source = oneLine(text);
+    if (/\d{2}\s*年应届生|应届生/.test(source)) return { experience_years: 0, experience_years_text: "应届生" };
+    if (/无经验/.test(source)) return { experience_years: 0, experience_years_text: "无经验" };
     const range = source.match(/(\d+)\s*[-~—至]\s*(\d+)\s*年/);
-    if (range) return Number.parseInt(range[2], 10) || null;
-    const exact = source.match(/(\d+)\s*年/);
-    return exact ? (Number.parseInt(exact[1], 10) || null) : null;
+    if (range) return { experience_years: Number.parseInt(range[1], 10) || 0, experience_years_text: `${range[1]}-${range[2]}年` };
+    const over = source.match(/(\d+)\s*年以上/);
+    if (over) return { experience_years: Number.parseInt(over[1], 10) || 0, experience_years_text: `${over[1]}年以上` };
+    const exact = source.match(/(?:^|\s|\||｜)(\d+)\s*年(?:经验|工作经验)?(?:\s|\||｜|$)/);
+    if (exact) return { experience_years: Number.parseInt(exact[1], 10) || 0, experience_years_text: `${exact[1]}年` };
+    return { experience_years: null, experience_years_text: "" };
+  }
+
+  function parseYears(text) {
+    return parseExperience(text).experience_years;
   }
 
   function parseEducation(text) {
-    return (String(text || "").match(/大专|本科|硕士|博士|研究生|中专|高中/) || [""])[0];
+    return (String(text || "").match(/学历不限|大专|本科|硕士|博士|研究生|中专|高中/) || [""])[0];
+  }
+
+  function isForbiddenName(value) {
+    const name = oneLine(value).replace(/[：:，,。；;|｜]+$/g, "");
+    if (!name || BAD_NAMES.includes(name) || NAME_FORBIDDEN_WORDS.includes(name) || includesAny(name, NAV_WORDS)) return true;
+    if (/^\d+/.test(name) || /岁|年|活跃|到岗|在线|学历|经验|职位|经历/.test(name)) return true;
+    if (/^(本科|大专|硕士|博士|高中|中专|招聘|游戏|上海|北京|广州|深圳|杭州)$/.test(name)) return true;
+    return false;
   }
 
   function parseNameFromText(text) {
-    const source = oneLine(text);
+    const source = oneLine(text).replace(/^[姓名候选人联系人：:\s]+/, "");
     const patterns = [
-      /^([\u4e00-\u9fa5]{2,4})(?=\s*(今日活跃|刚刚活跃|在线|最近活跃|\d{2}岁|男|女|大专|本科|硕士|博士|\d+年|\||$))/,
-      /(?:姓名|候选人|联系人)[:：\s]*([\u4e00-\u9fa5]{2,4})/,
-      /([\u4e00-\u9fa5]{2,4})\s*(?:今日活跃|刚刚活跃|在线|最近活跃)\s*\d{2}岁/,
-      /([\u4e00-\u9fa5]{2,4})\s*(?:男|女)?\s*\d{2}岁\s*[|｜]/,
+      /^([\u4e00-\u9fa5]{1,3}(?:先生|女士))(?=\s|$|[，,|｜])/,
+      /^([\u4e00-\u9fa5]{2,4})(?=\s*(?:\d+日内活跃|今日活跃|刚刚活跃|在线|最近活跃|\d{2}岁|男|女|大专|本科|硕士|博士|\d+年|\||｜|$))/,
+      /(?:姓名|候选人|联系人)[:：\s]*([\u4e00-\u9fa5]{1,3}(?:先生|女士)|[\u4e00-\u9fa5]{2,4})/,
+      /([\u4e00-\u9fa5]{1,3}(?:先生|女士)|[\u4e00-\u9fa5]{2,4})\s*(?:\d+日内活跃|今日活跃|刚刚活跃|在线|最近活跃)\s*\d{2}岁/,
+      /([\u4e00-\u9fa5]{1,3}(?:先生|女士)|[\u4e00-\u9fa5]{2,4})\s*(?:男|女)?\s*\d{2}岁\s*[|｜]?/,
     ];
+    const candidates = [];
     for (const pattern of patterns) {
-      const name = source.match(pattern)?.[1] || "";
-      if (name && !BAD_NAMES.includes(name) && !includesAny(name, NAV_WORDS)) return name;
+      const match = source.match(pattern);
+      if (match?.[1]) candidates.push(match[1]);
     }
-    return "";
+    source.split(/[\s|｜,，]+/).forEach((token) => {
+      if (/^[\u4e00-\u9fa5]{1,3}(?:先生|女士)$/.test(token) || /^[\u4e00-\u9fa5]{2,4}$/.test(token)) candidates.push(token);
+    });
+    return candidates.map(oneLine).find((name) => !isForbiddenName(name)) || "";
   }
 
   function parsePersonBasics(text) {
+    const exp = parseExperience(text);
     return {
       name: parseNameFromText(text),
       age: parseAge(text),
-      experience_years: parseYears(text),
+      experience_years: exp.experience_years,
+      experience_years_text: exp.experience_years_text,
       education: parseEducation(text),
     };
   }
 
   function emptyJob(source = "unknown") {
-    return { title: "", city: "", salary: "", description: "", responsibilities: [], requirements: [], preferred_keywords: [], keywords: [], raw_text: "", source, jd_complete: false, warning: "" };
+    return { title: "", city: "", salary: "", experience_required: "", education_required: "", description: "", responsibilities: [], requirements: [], preferred_keywords: [], keywords: [], raw_text: "", source, jd_complete: false, warning: "" };
   }
 
   function emptyCandidate(source = "unknown") {
@@ -269,6 +297,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       name: "",
       age: null,
       experience_years: null,
+      experience_years_text: "",
       education: "",
       expected_position: "",
       expected_city: "",
@@ -371,7 +400,9 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return {
       title: item.title,
       city: (rawText.match(CITY_RE) || [""])[0],
-      salary: (rawText.match(/\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]\s*[-~]\s*\d+\s*[kK]|\d+\s*万\s*[-~]\s*\d+\s*万/) || [""])[0],
+      salary: (rawText.match(SALARY_RE) || [""])[0],
+      experience_required: (rawText.match(JOB_EXP_RE) || [""])[0],
+      education_required: (rawText.match(EDU_REQ_RE) || [""])[0],
       description: jdComplete ? rawText.slice(0, 1600) : "",
       responsibilities: jdComplete ? detail.responsibilities : [],
       requirements: jdComplete ? detail.requirements : [],
@@ -536,7 +567,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       city: expected.expected_city || (raw.match(CITY_RE) || [""])[0],
       expected_position: expected.expected_position,
       expected_city: expected.expected_city,
-      salary_expectation: expected.salary_expectation || (raw.match(/\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]\s*[-~]\s*\d+\s*[kK]|\d+\s*万\s*[-~]\s*\d+\s*万|面议/) || [""])[0],
+      salary_expectation: expected.salary_expectation || (raw.match(SALARY_RE) || [""])[0],
       skills: source === "selected_chat_item" ? [] : skills,
       project_keywords: source === "selected_chat_item" ? [] : projectKeywords,
       work_experiences: source === "selected_chat_item" ? [] : raw.split(/(?=\d{4}[.-]|\d+年|公司|项目|工作经历)/).map(oneLine).filter((line) => line.length > 8 && !/^\d{2}-\d{2}\s+\d{1,2}:\d{2}$/.test(line)).slice(0, 8),
