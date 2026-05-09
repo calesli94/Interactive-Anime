@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from datetime import datetime
 from hashlib import sha256
+import json
 import re
 
 from fastapi import FastAPI, Form, HTTPException
@@ -35,6 +36,7 @@ def on_startup() -> None:
     init_mode_table()
     init_stats_table()
     init_followups_table()
+    init_job_profiles_table()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -112,6 +114,136 @@ def health_check() -> dict:
     return {"status": "ok"}
 
 
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def init_job_profiles_table() -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT UNIQUE NOT NULL,
+            city TEXT DEFAULT '',
+            salary TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            responsibilities TEXT DEFAULT '',
+            requirements TEXT DEFAULT '',
+            preferred_keywords TEXT DEFAULT '[]',
+            source TEXT DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _normalise_title(title: str) -> str:
+    return re.sub(r"\s+", " ", str(title or "")).strip()
+
+
+def _keywords_to_list(value) -> list[str]:
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("["):
+            try:
+                decoded = json.loads(raw)
+                items = decoded if isinstance(decoded, list) else [raw]
+            except Exception:
+                items = re.split(r"[,，;；\n]+", raw)
+        else:
+            items = re.split(r"[,，;；\n]+", raw)
+    else:
+        items = []
+    return [re.sub(r"\s+", " ", str(item)).strip() for item in items if str(item).strip()]
+
+
+def _profile_row_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "city": row["city"] or "",
+        "salary": row["salary"] or "",
+        "description": row["description"] or "",
+        "responsibilities": row["responsibilities"] or "",
+        "requirements": row["requirements"] or "",
+        "preferred_keywords": _keywords_to_list(row["preferred_keywords"] or "[]"),
+        "source": row["source"] or "manual",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "jd_complete": bool(row["description"] or row["responsibilities"] or row["requirements"]),
+    }
+
+
+@app.get("/api/job-profile")
+def job_profile_get(title: str) -> dict:
+    init_job_profiles_table()
+    normalized = _normalise_title(title)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="缺少岗位名称")
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM job_profiles WHERE title = ?", (normalized,)).fetchone()
+    conn.close()
+    if not row:
+        return {"ok": False, "profile": None, "message": "未找到该岗位配置"}
+    return {"ok": True, "profile": _profile_row_to_dict(row)}
+
+
+@app.get("/api/job-profiles")
+def job_profiles_list() -> dict:
+    init_job_profiles_table()
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM job_profiles ORDER BY updated_at DESC, title ASC").fetchall()
+    conn.close()
+    return {"ok": True, "profiles": [_profile_row_to_dict(row) for row in rows]}
+
+
+@app.post("/api/job-profile/save")
+def job_profile_save(payload: dict) -> dict:
+    init_job_profiles_table()
+    title = _normalise_title(payload.get("title", ""))
+    if not title:
+        raise HTTPException(status_code=400, detail="缺少岗位名称，无法保存岗位配置")
+    now = _now_iso()
+    city = str(payload.get("city") or "").strip()
+    salary = str(payload.get("salary") or "").strip()
+    description = str(payload.get("description") or "").strip()
+    responsibilities = str(payload.get("responsibilities") or "").strip()
+    requirements = str(payload.get("requirements") or "").strip()
+    preferred_keywords = json.dumps(_keywords_to_list(payload.get("preferred_keywords") or []), ensure_ascii=False)
+    source = str(payload.get("source") or "manual").strip() or "manual"
+    conn = get_connection()
+    existing = conn.execute("SELECT created_at FROM job_profiles WHERE title = ?", (title,)).fetchone()
+    created_at = existing["created_at"] if existing else now
+    conn.execute(
+        """
+        INSERT INTO job_profiles (title, city, salary, description, responsibilities, requirements, preferred_keywords, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(title) DO UPDATE SET
+            city = excluded.city,
+            salary = excluded.salary,
+            description = excluded.description,
+            responsibilities = excluded.responsibilities,
+            requirements = excluded.requirements,
+            preferred_keywords = excluded.preferred_keywords,
+            source = excluded.source,
+            updated_at = excluded.updated_at
+        """,
+        (title, city, salary, description, responsibilities, requirements, preferred_keywords, source, created_at, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM job_profiles WHERE title = ?", (title,)).fetchone()
+    conn.close()
+    profile = _profile_row_to_dict(row)
+    log_event("job_profile_saved", f"{title}:{source}")
+    return {"ok": True, "profile": profile}
+
+
 def _cap_level(level: str, max_level: str) -> str:
     order = {"D": 0, "C": 1, "B": 2, "A": 3, "S": 4}
     reverse = {v: k for k, v in order.items()}
@@ -168,13 +300,20 @@ def _infer_job_core_requirements(title: str, job_text: str) -> list[tuple[str, l
             ("美宣/游戏项目经验", ["美宣", "游戏美术", "游戏", "项目经历"]),
             ("PS/SAI/CSP 绘画工具", ["Photoshop", "PhotoShop", "PS", "SAI", "CSP", "csp"]),
         ])
-    # Extract explicit keywords from JD so non-standard roles still compare against requirements.
+    # Extract explicit keywords from JD / Job Profile Store so non-standard roles still compare against requirements.
     explicit = []
-    for word in ["Unity", "UE", "Unreal", "虚幻", "Shader", "材质", "工具链", "特效", "TA", "技术美术", "AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头", "原画", "角色原画", "角色设计", "美宣", "Photoshop", "SAI", "CSP", "AE"]:
+    for word in [
+        "Unity", "UE", "Unreal", "虚幻", "Shader", "材质", "工具链", "特效", "TA", "技术美术",
+        "AI视频", "ComfyUI", "Stable Diffusion", "可灵", "即梦", "剪辑", "镜头", "镜头语言", "分镜", "角色演出", "动画", "游戏美术",
+        "原画", "角色原画", "角色设计", "美宣", "Photoshop", "SAI", "CSP", "AE", "Premiere",
+    ]:
         if _contains_any(source, [word]):
             explicit.append(word)
     if explicit:
         groups.append(("岗位显性技能关键词", explicit))
+    if not groups and source.strip():
+        words = [item for item in re.split(r"[,，;；、\s]+", source) if 2 <= len(item) <= 30]
+        groups.append(("岗位要求关键词", words[:12] or [title]))
     return groups
 
 
@@ -219,7 +358,7 @@ def _strict_art_score(candidate: dict, job_config: dict) -> dict:
             "level": level,
             "fit_result": "possible_fit" if matched else "weak_fit",
             "priority": "中" if matched else "低",
-            "recommended_action": "补充岗位要求后重新分析",
+            "recommended_action": "请补充岗位要求后重新分析",
             "recommended_mode": "assist",
             "message_intent": "ask_more",
             "reasons": matched + missing,
@@ -317,8 +456,18 @@ def priority_analyze(payload: dict) -> dict:
 
 
 def _contains_any(text: str, keywords: list[str]) -> bool:
-    lower_text = text.lower()
-    return any(keyword.lower() in lower_text for keyword in keywords)
+    lower_text = str(text or "").lower()
+    for keyword in keywords:
+        kw = str(keyword or "").lower()
+        if not kw:
+            continue
+        if kw == "ta":
+            if re.search(r"(?<![a-z])ta(?![a-z])", lower_text):
+                return True
+            continue
+        if kw in lower_text:
+            return True
+    return False
 
 
 def _level_from_score(score: int) -> str:
@@ -573,10 +722,10 @@ def _job_core_requirement_phrase(job_config: dict, missing_points: list[str]) ->
         + [str(x) for x in (job_config.get("requirements") or [])[:8]]
         + [str(x) for x in (job_config.get("preferred_keywords") or [])[:8]]
     )
-    if _contains_any(safe_job_text, ["技术美术", "TA", "Shader", "Unity", "UE"]):
-        return "TA、引擎、Shader或工具链经验"
     if _contains_any(safe_job_text, ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头"]):
         return "AI视频、剪辑、AI工具和镜头语言经验"
+    if _contains_any(safe_job_text, ["技术美术", "TA", "Shader", "Unity", "UE"]):
+        return "TA、引擎、Shader或工具链经验"
     if _contains_any(safe_job_text, ["角色美宣", "角色设计", "原画"]):
         return "角色原画、美宣和游戏项目经验"
     return missing_points[0] if missing_points else "岗位核心能力"
@@ -700,6 +849,8 @@ def message_generate(payload: dict) -> dict:
     if not name or name == "候选人" or not job_title or job_title == "该岗位":
         raise HTTPException(status_code=400, detail="缺少候选人姓名或岗位信息，无法生成精准话术")
 
+    jd_complete = bool(job_config.get("jd_complete") or job_config.get("description") or job_config.get("requirements") or job_config.get("responsibilities"))
+    message_intent = summary["message_intent"] if jd_complete else "ask_more"
     safe_input = {
         "candidate_name": name,
         "job_title": job_title,
@@ -709,7 +860,7 @@ def message_generate(payload: dict) -> dict:
         "communication_stage": chat_context["stage"],
         "communication_intent": chat_context["last_candidate_intent"],
         "known_objections": chat_context["known_objections"],
-        "message_intent": summary["message_intent"],
+        "message_intent": message_intent,
         "core_requirement": _job_core_requirement_phrase(job_config, summary["top_missing_points"]),
     }
     # HARD RULE: variants are generated only from SAFE_MESSAGE_INPUT. Raw chat/page/JD
