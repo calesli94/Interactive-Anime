@@ -174,11 +174,35 @@ async function loadStoredJobIfMissing(){
   if(data.lastJob?.title && data.lastJob.source==='manual') state.job=data.lastJob;
 }
 
+function ensureJobRequirementRows(){
+  const salary=$('job-salary');
+  const parent=salary?.parentElement?.parentElement;
+  const salaryRow=salary?.parentElement;
+  if(!parent || !salaryRow) return;
+  const ensure=(id,label,after)=>{
+    let el=$(id);
+    if(el) return el;
+    const row=document.createElement('p');
+    row.textContent=`${label}：`;
+    el=document.createElement('span');
+    el.id=id;
+    el.textContent='-';
+    row.appendChild(el);
+    parent.insertBefore(row, after?.nextSibling || salaryRow.nextSibling);
+    return el;
+  };
+  const exp=ensure('job-experience-required','经验要求',salaryRow);
+  ensure('job-education-required','学历要求',exp?.parentElement || salaryRow);
+}
+
 function renderJob(){
   const job=state.job||{};
+  ensureJobRequirementRows();
   $('job-title').textContent=textOrDash(job.title);
   $('job-city').textContent=textOrDash(job.city);
   $('job-salary').textContent=textOrDash(job.salary);
+  $('job-experience-required').textContent=textOrDash(job.experience_required);
+  $('job-education-required').textContent=textOrDash(job.education_required);
   $('job-description-preview').textContent=textOrDash((job.description||job.raw_text||'').slice(0,120));
   const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
   set('job-source-detail', textOrDash(job.source));
