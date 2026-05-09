@@ -1,3 +1,5 @@
+# Runtime dependencies for AI Recruit Assistant local FastAPI service
 fastapi==0.115.12
 uvicorn==0.34.2
 pydantic==2.11.4
+python-multipart==0.0.20

@@ -1,66 +1,554 @@
 const API = "http://127.0.0.1:8787";
-const state = { serviceOnline:false, settings:null, candidate:null, priorityResult:null, messageVariants:[], selectedMessage:null, chatResult:null, todayStats:null };
+const state = {
+  serviceOnline:false,
+  settings:null,
+  pageContext:null,
+  job:null,
+  candidate:null,
+  chat:null,
+  contextId:"",
+  priorityResult:null,
+  messageVariants:[],
+  selectedMessage:null,
+  chatResult:null,
+  todayStats:null,
+  followups:[],
+};
 
-async function api(path, opts={}){ const r=await fetch(`${API}${path}`,opts); if(!r.ok) throw new Error(`${path} ${r.status}`); return r.json(); }
-function notify(msg){ console.warn(msg); }
+const $ = (id) => document.getElementById(id);
+async function api(path, opts={}){ const r=await fetch(`${API}${path}`,opts); if(!r.ok){ let msg=`${path} ${r.status}`; try{ const j=await r.json(); msg=j.detail||msg; }catch{} throw new Error(msg); } return r.json(); }
+function notify(msg, type='info'){
+  const text=String(msg||'');
+  const el=$('action-feedback');
+  if(el) el.textContent=text;
+  if(type==='warn') console.warn(text);
+  else console.log(text);
+}
+function feedback(msg, type='info'){ notify(msg, type); }
+function textOrDash(v){ return v ? String(v) : '-'; }
+function hasJobDetail(){ return Boolean(state.job?.jd_complete || state.job?.description || (state.job?.requirements||[]).length || (state.job?.responsibilities||[]).length); }
+function splitLines(value){
+  if(Array.isArray(value)) return value.map((x)=>String(x).trim()).filter(Boolean);
+  return String(value||'').split(/\n|；|;/).map((x)=>x.trim()).filter(Boolean);
+}
+function splitKeywords(value){
+  if(Array.isArray(value)) return value.map((x)=>String(x).trim()).filter(Boolean);
+  return String(value||'').split(/,|，|；|;|\n/).map((x)=>x.trim()).filter(Boolean);
+}
+function linesText(value){ return Array.isArray(value) ? value.join('\n') : String(value||''); }
+function setJobProfileStatus(text){ const el=$('job-profile-status'); if(el) el.textContent=text||'-'; }
+function isReliableContext(){ return Boolean(state.job?.title) && hasJobDetail() && state.candidate?.profile_complete !== false; }
+function renderReliability(){
+  const jobSource=state.job?.source||'-';
+  const candidateSource=state.candidate?.source||'-';
+  const complete=state.candidate?.profile_complete===true?'完整':(state.candidate?.profile_complete===false?'不完整':'-');
+  const warning=!isReliableContext()?'当前分析可信度较低：请确认岗位卡和在线简历已打开':'';
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('job-source',jobSource);
+  set('candidate-source',candidateSource);
+  set('candidate-complete',complete);
+  set('analysis-reliability-warning',warning);
+  set('score-reliability',warning||'可信');
+}
+
+function isBlockedPage(url=''){
+  return /^(edge|chrome|extensions):\/\//.test(url) || /^about:/.test(url) || url.startsWith('chrome-extension://') || url.startsWith('edge-extension://');
+}
+
+function sleep(ms){ return new Promise((resolve)=>setTimeout(resolve,ms)); }
+
+function queryActiveTab(){
+  return new Promise((resolve)=>{
+    try{
+      chrome.tabs.query({active:true,currentWindow:true},(tabs)=>{
+        const err=chrome.runtime.lastError;
+        if(err) resolve({ok:false,error:err.message||String(err)});
+        else resolve({ok:true,tab:tabs?.[0]});
+      });
+    }catch(e){
+      resolve({ok:false,error:e?.message||String(e)});
+    }
+  });
+}
+
+async function sendMessageToTab(tabId,message){
+  return new Promise((resolve)=>{
+    try{
+      chrome.tabs.sendMessage(tabId,message,(res)=>{
+        const err=chrome.runtime.lastError;
+        if(err) resolve({ok:false,__message_error:true,error:err.message||String(err)});
+        else resolve(res);
+      });
+    }catch(e){
+      resolve({ok:false,__message_error:true,error:e?.message||String(e)});
+    }
+  });
+}
+
+function shouldInjectForMessageError(error=''){
+  return error.includes('Receiving end does not exist') || error.includes('Could not establish connection');
+}
+
+async function injectContentScript(tabId){
+  return new Promise((resolve)=>{
+    try{
+      chrome.scripting.executeScript({target:{tabId},files:['content.js']},async()=>{
+        const err=chrome.runtime.lastError;
+        if(err) resolve({ok:false,error:`content.js 注入失败：${err.message||String(err)}`});
+        else{
+          await sleep(300);
+          resolve({ok:true});
+        }
+      });
+    }catch(e){
+      resolve({ok:false,error:`content.js 注入失败：${e?.message||e}`});
+    }
+  });
+}
+
+async function waitForContentReady(tabId, attempts=5){
+  let lastError='';
+  for(let i=0;i<attempts;i+=1){
+    const res=await sendMessageToTab(tabId,{type:'PING'});
+    if(res && !res.__message_error && res.ok) return {ok:true};
+    lastError=res?.error||lastError;
+    await sleep(200);
+  }
+  return {ok:false,error:lastError||'content.js 注入后未响应 PING'};
+}
+
+async function sendToContent(message){
+  const active=await queryActiveTab();
+  if(!active.ok) return {ok:false,error:`无法获取当前标签页：${active.error}`};
+  const tab=active.tab;
+  if(!tab?.id) return {ok:false,error:'未找到当前活动标签页'};
+  if(isBlockedPage(tab.url||'')){
+    return {ok:false,error:'当前页面是浏览器内部页面，插件无法读取，请打开 BOSS 页面或普通网页'};
+  }
+
+  let res=await sendMessageToTab(tab.id,message);
+  if(res && !res.__message_error) return res;
+
+  const firstError=res?.error||'';
+  if(firstError && !shouldInjectForMessageError(firstError)){
+    return {ok:false,error:firstError};
+  }
+
+  const injected=await injectContentScript(tab.id);
+  if(!injected.ok) return injected;
+
+  const ready=await waitForContentReady(tab.id);
+  if(!ready.ok) return {ok:false,error:`content.js 已注入但未响应，请刷新 BOSS 页面后重试：${ready.error}`};
+
+  res=await sendMessageToTab(tab.id,message);
+  if(res && !res.__message_error) return res;
+
+  const secondError=res?.error||'';
+  if(secondError && !shouldInjectForMessageError(secondError)) return {ok:false,error:secondError};
+  return {ok:false,error:`content.js 已注入但当前页面仍无法建立连接，请刷新 BOSS 页面后重试：${secondError||firstError||'未知原因'}`};
+}
 
 async function checkService(){
-  try { await api('/health'); state.serviceOnline=true; document.getElementById('service-status').textContent='本地服务已连接'; }
-  catch { state.serviceOnline=false; document.getElementById('service-status').textContent='请先启动本地服务'; }
+  try{ await api('/health'); state.serviceOnline=true; $('service-status').textContent='本地服务已连接'; }
+  catch{ state.serviceOnline=false; $('service-status').textContent='请先启动本地服务'; }
 }
 
-async function extractCandidateInfo(){
-  const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
-  if(!tab?.id) return null;
-  return new Promise((resolve)=>chrome.tabs.sendMessage(tab.id,{type:'EXTRACT_CANDIDATE'},resolve));
+function renderContext(){
+  const ctx=state.pageContext||{};
+  $('page-type').textContent=textOrDash(ctx.page_type);
+  $('context-id').textContent=textOrDash(state.contextId);
+  $('current-url').textContent=textOrDash(ctx.url);
+  renderJob();
+  renderCandidate();
+  renderChatContext();
+  renderReliability();
 }
 
-async function onAnalyzeCandidate(){
-  if(!state.serviceOnline) return notify('本地服务未启动');
-  let extracted=await extractCandidateInfo();
-  if(!extracted?.ok){ extracted={candidate:{name:'手动候选人',raw_text:document.getElementById('candidate-manual').value,skills:['UE'],experience_years:3,project_keywords:['次世代'],last_active:'today',contact_status:'未联系'}}; notify('页面提取失败，已使用手动输入'); }
-  state.candidate=extracted.candidate;
+async function saveJobIfAvailable(){
+  if(state.job?.title) await chrome.storage.local.set({lastJob:state.job});
+}
+
+async function loadStoredJobIfMissing(){
+  if(state.job?.title) return;
+  const data=await chrome.storage.local.get('lastJob');
+  if(data.lastJob?.title && data.lastJob.source==='manual') state.job=data.lastJob;
+}
+
+function renderJob(){
+  const job=state.job||{};
+  $('job-title').textContent=textOrDash(job.title);
+  $('job-city').textContent=textOrDash(job.city);
+  $('job-salary').textContent=textOrDash(job.salary);
+  $('job-description-preview').textContent=textOrDash((job.description||job.raw_text||'').slice(0,120));
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('job-source-detail', textOrDash(job.source));
+  set('job-jd-complete', job.jd_complete?'完整':'不完整');
+  set('job-warning', job.warning || (job.title&&!hasJobDetail()?'当前岗位缺少JD，请补充岗位要求后保存到岗位要求库。':''));
+  setJobProfileStatus(job.profile_status || (job.title ? (hasJobDetail() ? '已加载岗位要求库' : '当前岗位缺少JD，请补充岗位要求') : '-'));
+  const desc=$('job-description-manual'); if(desc && (!desc.value || job.source==='profile_store')) desc.value=job.description||'';
+  const resp=$('job-responsibilities-manual'); if(resp && (!resp.value || job.source==='profile_store')) resp.value=linesText(job.responsibilities||[]);
+  const req=$('job-requirements-manual'); if(req && (!req.value || job.source==='profile_store')) req.value=linesText(job.requirements||[]);
+  const keywords=$('job-keywords-manual'); if(keywords && (!keywords.value || job.source==='profile_store')) keywords.value=(job.preferred_keywords||job.keywords||[]).join(',');
+  renderReliability();
+}
+
+function renderCandidate(){
+  const c=state.candidate||{};
+  $('candidate-name').textContent=textOrDash(c.name);
+  $('candidate-title').textContent=textOrDash(c.current_title||c.title||c.expected_position);
+  $('candidate-city').textContent=textOrDash(c.expected_city||c.city);
+  $('candidate-exp').textContent=c.experience_years?`${c.experience_years}年`:'-';
+  $('candidate-skills').textContent=(c.skills||[]).join('、')||'-';
+  $('candidate-warning').textContent=c.warning || (c.name?'':'未识别候选人姓名，请确认当前页面为候选人详情或聊天页');
+  renderReliability();
+}
+
+function renderChatContext(){
+  const chat=state.chat||{};
+  $('chat-candidate-name').textContent=textOrDash(chat.candidate_name);
+  const cName=state.candidate?.name||'';
+  const chName=chat.candidate_name||'';
+  $('chat-context-warning').textContent=(cName&&chName&&cName!==chName)?'当前聊天对象与已分析候选人不一致，请刷新上下文':'';
+}
+
+function applyJobProfile(profile, status='已加载岗位要求库'){
+  if(!profile) return false;
+  state.job={
+    ...(state.job||{}),
+    title: profile.title || state.job?.title || '',
+    city: profile.city || state.job?.city || '',
+    salary: profile.salary || state.job?.salary || '',
+    description: profile.description || '',
+    responsibilities: splitLines(profile.responsibilities),
+    requirements: splitLines(profile.requirements),
+    preferred_keywords: splitKeywords(profile.preferred_keywords),
+    jd_complete: Boolean(profile.jd_complete || profile.description || profile.responsibilities || profile.requirements),
+    source: profile.source === 'manual' ? 'profile_store' : (profile.source || 'profile_store'),
+    profile_status: status,
+    warning: '',
+  };
+  renderJob();
+  return true;
+}
+
+async function loadJobProfileByTitle(title, {silent=false}={}){
+  const jobTitle=String(title||'').trim();
+  if(!jobTitle){ if(!silent) feedback('请先识别岗位名称'); return false; }
   try{
-    const data=await api('/api/priority/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,job_config:{job_title:'游戏美术',required_skills:['UE','Maya'],preferred_keywords:['3A','次世代','角色','场景'],urgency:'high'}})});
-    state.priorityResult=data;
-    document.getElementById('match-rate').textContent=`${data.score}%`;
-    document.getElementById('candidate-level').textContent=data.level;
-    document.getElementById('candidate-priority').textContent=data.priority;
-    document.getElementById('recommended-action').textContent=data.recommended_action;
-    document.getElementById('recommended-mode').textContent=data.recommended_mode;
-    document.getElementById('recommended-reason').textContent=(data.reasons||[]).join('；');
-    await refreshTodayStats();
-  }catch(e){ notify(`分析失败: ${e.message}`); }
+    const data=await api(`/api/job-profile?title=${encodeURIComponent(jobTitle)}`);
+    if(data?.ok && data.profile){
+      applyJobProfile(data.profile,'已加载岗位要求库');
+      if(!silent) feedback(`已加载岗位要求库：${jobTitle}`);
+      return true;
+    }
+    state.job={...(state.job||{}),jd_complete:false,profile_status:'当前岗位缺少JD，请补充岗位要求后保存',warning:'当前岗位缺少JD，请补充岗位要求后保存到岗位要求库。'};
+    renderJob();
+    if(!silent) feedback(data?.message || '未找到该岗位配置，请补充岗位要求后保存');
+    return false;
+  }catch(e){
+    if(!silent) feedback(`加载岗位要求库失败：${e.message}`,'warn');
+    return false;
+  }
 }
 
-async function onGenerateScript(){
-  if(!state.candidate||!state.priorityResult) return notify('请先分析候选人');
-  try{ const data=await api('/api/message/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,priority_result:state.priorityResult,job_config:{job_title:'游戏美术'}})}); state.messageVariants=data.variants||[]; renderMessages(); await refreshTodayStats(); }catch(e){ notify(e.message); }
+async function loadCurrentJobProfile(){
+  await loadJobProfileByTitle(state.job?.title || $('job-title')?.textContent || '');
 }
 
-function renderMessages(){ const box=document.getElementById('message-list'); box.innerHTML=''; state.messageVariants.forEach((v,i)=>{ const d=document.createElement('div'); d.className='reply-box'; d.innerHTML=`<p><b>${v.strategy}</b>：${v.message}<br/>原因：${v.reason}</p><button data-copy="${i}">复制</button><button data-fill="${i}">填入输入框</button>`; box.appendChild(d);}); }
+async function saveJobProfile(){
+  const title=(state.job?.title||$('job-title')?.textContent||'').trim();
+  if(!title){ feedback('请先刷新并识别岗位名称'); return; }
+  const description=($('job-description-manual')?.value||'').trim();
+  const responsibilities=($('job-responsibilities-manual')?.value||'').trim();
+  const requirements=($('job-requirements-manual')?.value||'').trim();
+  const preferred_keywords=splitKeywords($('job-keywords-manual')?.value||'');
+  if(!description && !responsibilities && !requirements){ feedback('请至少粘贴岗位描述、岗位职责或任职要求后再保存'); return; }
+  try{
+    const data=await api('/api/job-profile/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,city:state.job?.city||'',salary:state.job?.salary||'',description,responsibilities,requirements,preferred_keywords,source:'manual'})});
+    if(data?.ok && data.profile){
+      applyJobProfile(data.profile,'已保存岗位配置');
+      await saveJobIfAvailable();
+      feedback(`已保存岗位配置：${title}`);
+    }else feedback('保存岗位配置失败');
+  }catch(e){ feedback(`保存岗位配置失败：${e.message}`,'warn'); }
+}
 
-async function fillMessage(message,strategy=''){ const [tab]=await chrome.tabs.query({active:true,currentWindow:true}); if(!tab?.id) return false; return new Promise((resolve)=>chrome.tabs.sendMessage(tab.id,{type:'FILL_GREETING',text:message},async(res)=>{ if(res?.ok){ await track('fill_message',{message_strategy:strategy,mode:state.settings?.mode||'assist'}); } resolve(!!res?.ok);})); }
+async function refreshContext(){
+  feedback('正在刷新页面上下文...');
+  try{
+    const ctx=await sendToContent({type:'EXTRACT_PAGE_CONTEXT'});
+    if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入','warn'); return; }
+    state.pageContext=ctx;
+    state.job=ctx.job?.title ? ctx.job : state.job||{};
+    await loadStoredJobIfMissing();
+    if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true});
+    state.candidate=ctx.candidate||{};
+    state.chat=ctx.chat||{};
+    state.contextId=ctx.context_id||'';
+    await saveJobIfAvailable();
+    renderContext();
+    const warnings=[];
+    const warningText=(ctx.warnings||[]).join('；');
+    if(!ctx.job?.title && /岗位/.test(warningText)) warnings.push('未识别岗位信息：请确认当前聊天窗口内有岗位卡，或在下方手动配置岗位');
+    if(!ctx.candidate?.name && /候选人姓名/.test(warningText)) warnings.push('未识别候选人姓名，请打开具体候选人聊天窗口或在线简历');
+    if(/聊天窗口|聊天主窗口/.test(warningText)) warnings.push('未检测到当前聊天主窗口，请先点击具体候选人对话');
+    feedback(warnings.length ? warnings.join('；') : '页面上下文已刷新');
+  }catch(e){
+    feedback(`刷新上下文失败：${e?.message||e}`,'warn');
+  }
+}
 
-async function track(event_type,payload={}){ try{ await api('/api/events/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_type,candidate_hash:(state.candidate?.name||'').slice(0,8),payload})}); }catch{ console.warn('埋点失败'); } }
+async function refreshJob(){
+  feedback('正在刷新岗位信息...');
+  try{
+    const res=await sendToContent({type:'EXTRACT_JOB'});
+    if(res?.ok){
+      state.job=res.job?.title ? res.job : state.job||{};
+      if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true});
+      await saveJobIfAvailable();
+      renderJob();
+      feedback(state.job?.title?(hasJobDetail()?'岗位信息已刷新，并已加载岗位要求库':'岗位名称已刷新，但当前岗位缺少JD，请补充岗位要求'):'未识别岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位');
+    } else {
+      feedback(res?.error || '未能读取岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位','warn');
+    }
+  }catch(e){
+    feedback(`刷新岗位失败：${e?.message||e}`,'warn');
+  }
+}
 
-async function loadSettings(){ try{ state.settings=await api('/api/settings'); document.getElementById('current-mode').textContent=state.settings.mode; const r=document.querySelector(`input[name='greet_mode'][value='${state.settings.mode}']`); if(r) r.checked=true; }catch(e){ notify(e.message);} }
-async function saveMode(){ const mode=document.querySelector("input[name='greet_mode']:checked").value; if(mode==='auto'&&!confirm('自动模式会自动执行打招呼动作，请确认你了解风险并主动开启。')) return; state.settings=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,min_score:60})}); document.getElementById('current-mode').textContent=state.settings.mode; }
+function manualCandidateIfNeeded(){
+  const manual=$('candidate-manual').value.trim();
+  if(manual && (!state.candidate?.raw_text || !state.candidate?.name)) {
+    state.candidate={...(state.candidate||{}), raw_text:manual, name:state.candidate?.name||''};
+  }
+}
 
-async function queueAdd(){ if(!state.priorityResult) return notify('请先分析候选人'); if(state.priorityResult.score < (state.settings?.min_score||60)) return notify('分数低于队列阈值'); const r=await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,score:state.priorityResult.score})}); document.getElementById('queue-count').textContent=r.queue_count; }
-async function queueAction(path){ await api(path,{method:'POST'}); const st=await api('/api/queue/status'); document.getElementById('queue-count').textContent=st.queue_count; if(path==='/api/queue/start'&&state.settings?.mode==='assist'&&state.messageVariants[0]){ await fillMessage(state.messageVariants[0].message,state.messageVariants[0].strategy); notify('已自动填入，请HR手动发送'); await track('queue_assist_executed',{});} }
+function jobConfigForApi(){
+  const job=state.job||{};
+  const manualDescription=($('job-description-manual')?.value||'').trim();
+  const manualResponsibilities=($('job-responsibilities-manual')?.value||'').trim();
+  const manualRequirements=($('job-requirements-manual')?.value||'').trim();
+  const manualKeywords=($('job-keywords-manual')?.value||'').trim();
+  const description=job.description||manualDescription||'';
+  const responsibilities=splitLines(job.responsibilities?.length ? job.responsibilities : manualResponsibilities);
+  const requirements=splitLines(job.requirements?.length ? job.requirements : manualRequirements);
+  const preferred_keywords=splitKeywords((job.preferred_keywords||[]).length ? job.preferred_keywords : manualKeywords);
+  return {
+    title: job.title||'',
+    job_title: job.title||'',
+    city: job.city||'',
+    salary: job.salary||'',
+    description,
+    responsibilities,
+    requirements,
+    required_skills: requirements.length ? requirements : (job.keywords||[]),
+    preferred_keywords: preferred_keywords.length ? preferred_keywords : (job.keywords||requirements||[]),
+    jd_complete: Boolean(job.jd_complete || description || requirements.length || responsibilities.length),
+    source: job.source||'',
+    raw_text: '',
+    urgency:'high',
+  };
+}
 
-async function analyzeChat(){ let chat=''; const [tab]=await chrome.tabs.query({active:true,currentWindow:true}); if(tab?.id){ const ext=await new Promise((resolve)=>chrome.tabs.sendMessage(tab.id,{type:'EXTRACT_CHAT'},resolve)); chat=ext?.text||''; } if(!chat){ chat=document.getElementById('chat-manual').value; notify('页面提取失败，已使用手动粘贴'); }
-  const r=await api('/api/chat/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_text:chat})}); state.chatResult=r; document.getElementById('chat-status').textContent=r.status; document.getElementById('chat-stage').textContent=r.stage; document.getElementById('chat-advice').textContent=r.next_action; document.getElementById('reply-1').textContent=r.reply_variants?.[0]||''; document.getElementById('reply-2').textContent=r.reply_variants?.[1]||''; }
+async function saveJobConfig(){
+  await saveJobProfile();
+}
 
-async function refreshTodayStats(){ try{ const d=await api('/api/stats/today'); state.todayStats=d; document.getElementById('today-analyzed').textContent=d.today_analyzed; document.getElementById('today-generated').textContent=d.today_generated; document.getElementById('today-filled').textContent=d.today_filled; document.getElementById('today-sent').textContent=d.today_sent_marked; document.getElementById('today-auto').textContent=d.today_auto_executed; const s=d.status_counts||{}; document.getElementById('today-status-split').textContent=`${s['有兴趣']||0}/${s['观望']||0}/${s['未回复']||0}/${s['拒绝']||0}`; }catch{} }
+async function track(event_type,payload={}){
+  await api('/api/events/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_type,candidate_hash:state.candidate?.name||state.contextId,payload:{...payload,context_id:state.contextId}})});
+  await refreshTodayStats();
+}
 
-function bind(){ document.getElementById('analyze-btn').onclick=onAnalyzeCandidate; document.getElementById('save-mode-btn').onclick=saveMode; document.getElementById('queue-add-btn').onclick=queueAdd; document.getElementById('queue-start-btn').onclick=()=>queueAction('/api/queue/start'); document.getElementById('queue-pause-btn').onclick=()=>queueAction('/api/queue/pause'); document.getElementById('queue-clear-btn').onclick=()=>queueAction('/api/queue/clear'); document.getElementById('queue-stop-all-btn').onclick=()=>queueAction('/api/queue/stop'); document.getElementById('analyze-chat-btn').onclick=analyzeChat; document.getElementById('mark-greeted-btn').onclick=()=>track('manual_sent_marked',{}); document.getElementById('mark-quality-btn').onclick=()=>track('candidate_starred',{}); document.getElementById('generate-followup-btn').onclick=onGenerateScript;
-  document.querySelectorAll('.status-btn').forEach(b=>b.onclick=()=>track('status_updated',{status:b.dataset.status}));
-  document.getElementById('top10-list').onclick=(e)=>{ const b=e.target.closest('button'); if(!b) return; if(b.dataset.action==='gen') onGenerateScript(); if(b.dataset.action==='queue') queueAdd(); };
-  document.getElementById('message-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.copy||b.dataset.fill); const v=state.messageVariants[i]; if(!v)return; if(b.dataset.copy!==undefined) navigator.clipboard.writeText(v.message); if(b.dataset.fill!==undefined){ const ok=await fillMessage(v.message,v.strategy); if(!ok) notify('未找到输入框，请确认当前页面是否为聊天页面'); }};
-  document.getElementById('fill-reply-1-btn').onclick=()=>fillMessage(document.getElementById('reply-1').textContent,'chat_reply_1'); document.getElementById('fill-reply-2-btn').onclick=()=>fillMessage(document.getElementById('reply-2').textContent,'chat_reply_2'); }
+async function analyzeCandidate(){
+  feedback('正在刷新/分析候选人...');
+  if(!state.serviceOnline) return feedback('本地服务未启动');
+  if(!state.pageContext) await refreshContext();
+  if(!state.candidate?.raw_text){
+    const extracted=await sendToContent({type:'EXTRACT_CANDIDATE'});
+    if(extracted?.ok) state.candidate=extracted.candidate||state.candidate;
+    else if(extracted?.error) feedback(extracted.error);
+  }
+  manualCandidateIfNeeded();
+  renderCandidate();
+  if(!state.candidate?.name){ feedback('未识别候选人姓名，请确认当前页面为候选人详情或聊天页'); return; }
+  if(!state.job?.title){ feedback('未识别当前沟通岗位，请先刷新上下文'); return; }
+  if(!hasJobDetail()) feedback('当前仅有岗位名称，缺少岗位职责/JD，本次分析可信度低，建议补充岗位要求后重新分析');
+  try{
+    const data=await api('/api/priority/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,job_config:jobConfigForApi(),context_id:state.contextId})});
+    state.priorityResult={...data,context_id:state.contextId};
+    $('match-rate').textContent=`${data.score}%`;
+    $('candidate-level').textContent=textOrDash(data.level);
+    $('candidate-priority').textContent=textOrDash(data.priority);
+    $('recommended-action').textContent=textOrDash(data.recommended_action);
+    $('recommended-mode').textContent=textOrDash(data.recommended_mode);
+    $('recommended-reason').textContent=(data.reasons||[]).join('；');
+    $('fit-result').textContent=textOrDash(data.fit_result);
+    $('message-intent').textContent=textOrDash(data.message_intent);
+    $('matched-points').textContent=(data.matched_points||[]).join('；')||'-';
+    $('missing-points').textContent=(data.missing_points||[]).join('；')||'-';
+    $('risk-points').textContent=(data.risk_points||[]).join('；')||'-';
+    $('score-reliability').textContent=textOrDash(data.reliability);
+    const genBtn=$('generate-message-btn');
+    if(genBtn) genBtn.textContent=data.message_intent==='reject'?'生成拒绝话术':(data.message_intent==='connect'?'生成建立链接话术':'生成话术');
+    if(state.candidate?.profile_complete===false){
+      $('candidate-priority').textContent='信息不完整，建议打开在线简历后重新分析';
+    }
+    renderReliability();
+    await track('priority_analyzed',{candidate_name:state.candidate.name,job_title:state.job?.title||'',score:data.score});
+    feedback(`已分析候选人：${state.candidate.name} / 岗位 ${state.job?.title||'未识别岗位'}`);
+  }catch(e){ feedback(`分析失败：${e.message}`); }
+}
 
-function renderTop10(){ const list=document.getElementById('top10-list'); const rows=[{name:'张晨',score:91,level:'S',action:'优先沟通'},{name:'李宁',score:85,level:'A',action:'建议沟通'}]; list.innerHTML=''; rows.forEach(r=>{ const li=document.createElement('li'); li.className='list-item'; li.innerHTML=`<p>${r.name} | ${r.score} | ${r.level} | ${r.action}</p><button data-action='gen'>生成话术</button><button data-action='queue'>加入队列</button>`; list.appendChild(li);}); }
+async function generateMessages(){
+  feedback('正在生成话术...');
+  if(!state.candidate?.name || !state.job?.title || !state.priorityResult){ feedback('缺少候选人或岗位信息，请先刷新上下文/分析候选人'); return; }
+  try{
+    const jobCfg=jobConfigForApi();
+    const safeCandidate={name:state.candidate.name,skills:state.candidate.skills||[],project_keywords:state.candidate.project_keywords||[],current_title:state.candidate.current_title||state.candidate.title||'',expected_position:state.candidate.expected_position||''};
+    const safeJob={title:jobCfg.title,job_title:jobCfg.job_title,description:jobCfg.description||'',responsibilities:jobCfg.responsibilities||[],requirements:jobCfg.requirements||[],preferred_keywords:jobCfg.preferred_keywords||[],jd_complete:jobCfg.jd_complete,source:jobCfg.source};
+    const data=await api('/api/message/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:safeCandidate,job_config:safeJob,priority_result:state.priorityResult,context_id:state.contextId,chat_context_summary:{stage:state.chatResult?.stage||'',last_candidate_intent:state.chatResult?.last_candidate_intent||'',known_objections:state.chatResult?.known_objections||[]}})});
+    state.messageVariants=data.variants||[];
+    renderMessages();
+    await track('message_generated',{candidate_name:state.candidate.name,job_title:state.job.title,count:state.messageVariants.length});
+    feedback('话术已生成');
+  }catch(e){ feedback(`生成话术失败：${e.message}`); }
+}
 
-window.addEventListener('DOMContentLoaded',async()=>{bind();renderTop10();await checkService();if(state.serviceOnline){await loadSettings();await refreshTodayStats();}});
+function renderMessages(){
+  const box=$('message-list');
+  box.innerHTML='';
+  state.messageVariants.forEach((v,i)=>{
+    const item=document.createElement('div');
+    item.className='reply-box';
+    item.innerHTML=`<p><b>${state.candidate.name}</b> / <b>${state.job.title}</b> / ${v.strategy}</p><p>${v.message}</p><p>原因：${v.reason||''}</p><button data-copy="${i}">复制</button><button data-fill="${i}">填入输入框</button>`;
+    box.appendChild(item);
+  });
+}
+
+async function fillMessage(message,strategy){
+  if(state.pageContext?.page_type !== 'chat_page'){ feedback('请先打开具体候选人聊天窗口'); return false; }
+  const res=await sendToContent({type:'FILL_GREETING',text:message});
+  if(res?.ok){
+    await track('fill_message',{candidate_name:state.candidate?.name||'',job_title:state.job?.title||'',strategy,method:res.method});
+    feedback(`已填入当前聊天输入框：候选人 ${state.candidate?.name||'-'} / 岗位 ${state.job?.title||'-'}`);
+    return true;
+  }
+  const d=res?.debug;
+  feedback(d?`填入失败：${res.error} textarea=${d.textarea_count}, input=${d.input_count}, editable=${d.contenteditable_count}, textbox=${d.textbox_count}`:'填入失败：未找到可输入的聊天框');
+  return false;
+}
+
+async function markCandidate(event_type,successText){
+  if(event_type==='candidate_starred' && (!state.priorityResult?.candidate_starred || state.candidate?.profile_complete===false)){ feedback('信息不完整或存在风险，暂不建议标记优质候选人'); return; }
+  try{
+    await track(event_type,{candidate_name:state.candidate?.name||'',job_title:state.job?.title||''});
+    feedback(successText);
+  }catch(e){ feedback(`操作失败：${e.message}`); }
+}
+
+async function analyzeChat(){
+  const res=await sendToContent({type:'EXTRACT_CHAT'});
+  const manual=$('chat-manual').value.trim();
+  if(res?.candidate_name) state.chat={candidate_name:res.candidate_name,messages_text:res.messages_text||res.text||manual,latest_messages:res.latest_messages||[]};
+  const chatText=res?.messages_text||res?.text||manual;
+  if(!res?.ok){
+    feedback(res?.error || '未检测到聊天窗口，请先点击具体候选人对话');
+    return;
+  }
+  renderChatContext();
+  if(state.chat?.candidate_name && state.candidate?.name && state.chat.candidate_name!==state.candidate.name) feedback('当前聊天对象与已分析候选人不一致，请刷新上下文');
+  try{
+    const data=await api('/api/chat/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_text:chatText,candidate:state.candidate,job_config:jobConfigForApi(),context_id:state.contextId})});
+    state.chatResult=data;
+    $('chat-status').textContent=textOrDash(data.status);
+    $('chat-stage').textContent=textOrDash(data.stage);
+    $('chat-advice').textContent=textOrDash(data.next_action);
+    $('reply-1').textContent=data.reply_variants?.[0]||'';
+    $('reply-2').textContent=data.reply_variants?.[1]||'';
+    await track('chat_analyzed',{candidate_name:state.candidate?.name||'',chat_candidate_name:state.chat?.candidate_name||'',status:data.status});
+    feedback('聊天分析完成');
+  }catch(e){ feedback(`聊天分析失败：${e.message}`); }
+}
+
+async function addFollowup(){
+  if(!state.chatResult){ feedback('请先分析聊天'); return; }
+  try{
+    const suggested=state.chatResult.reply_variants?.[0]||state.chatResult.next_action||'';
+    await api('/api/followup/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate_name:state.candidate?.name||state.chat?.candidate_name||'',candidate_text:state.candidate?.raw_text||'',job_title:state.job?.title||'',context_id:state.contextId,status:state.chatResult.status,priority:state.chatResult.priority,next_action:state.chatResult.next_action,suggested_message:suggested,last_contact_at:new Date().toISOString()})});
+    await track('followup_added',{candidate_name:state.candidate?.name||'',job_title:state.job?.title||'',status:state.chatResult.status});
+    await refreshFollowups();
+    feedback('已加入今日跟进');
+  }catch(e){ feedback(`加入跟进失败：${e.message}`); }
+}
+
+async function refreshFollowups(){
+  try{
+    const data=await api('/api/followup/today');
+    state.followups=data.items||[];
+    const box=$('followup-list');
+    box.innerHTML='';
+    if(!state.followups.length){ box.textContent='暂无今日待跟进'; return; }
+    state.followups.forEach((item,i)=>{
+      const div=document.createElement('div');
+      div.className='reply-box followup-item';
+      div.innerHTML=`<p><b>${item.candidate_name}</b> / ${item.job_title||'-'} / ${item.status} / ${item.priority}</p><p>${item.next_action}</p><p>${item.suggested_message}</p><button data-follow-copy="${i}">复制</button><button data-follow-fill="${i}">填入输入框</button><button data-follow-handled="${i}">标记已处理</button>`;
+      box.appendChild(div);
+    });
+  }catch(e){ feedback(`刷新跟进失败：${e.message}`); }
+}
+
+async function refreshTodayStats(){
+  try{
+    const d=await api('/api/stats/today');
+    state.todayStats=d;
+    $('today-analyzed').textContent=d.today_analyzed||0;
+    $('today-generated').textContent=d.today_generated||0;
+    $('today-filled').textContent=d.today_filled||0;
+    $('today-sent').textContent=d.today_sent_marked||0;
+    $('today-auto').textContent=d.today_auto_executed||0;
+    const s=d.status_counts||{};
+    $('today-status-split').textContent=`${s['有兴趣']||0}/${s['观望']||0}/${s['未回复']||0}/${s['拒绝']||0}`;
+    $('today-followup-added').textContent=d.today_followup_added||0;
+    $('today-followup-handled').textContent=d.today_followup_handled||0;
+  }catch{}
+}
+
+async function loadSettings(){
+  try{ state.settings=await api('/api/settings'); $('current-mode').textContent=state.settings.mode; const r=document.querySelector(`input[name='greet_mode'][value='${state.settings.mode}']`); if(r) r.checked=true; }catch(e){ feedback(e.message); }
+}
+async function saveMode(){ const mode=document.querySelector("input[name='greet_mode']:checked").value; state.settings=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,min_score:60})}); $('current-mode').textContent=state.settings.mode; feedback('模式已保存'); }
+async function queueAction(path){ await api(path,{method:'POST'}); const st=await api('/api/queue/status'); $('queue-count').textContent=st.queue_count; feedback('队列状态已更新'); }
+async function queueAdd(){ if(!state.priorityResult){ feedback('请先分析候选人'); return; } const r=await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,context_id:state.contextId})}); $('queue-count').textContent=r.queue_count; feedback('已加入队列'); }
+
+async function debugDom(){
+  const res=await sendToContent({type:'DEBUG_DOM'});
+  $('debug-dom-output').textContent=JSON.stringify(res,null,2).slice(0,3000);
+  feedback(res?.ok?'DOM 调试信息已输出':(res?.error||'DOM 调试失败'));
+}
+
+function bind(){
+  $('refresh-context-btn').onclick=refreshContext;
+  $('debug-dom-btn').onclick=debugDom;
+  $('refresh-job-btn').onclick=refreshJob;
+  $('analyze-btn').onclick=analyzeCandidate;
+  $('generate-message-btn').onclick=generateMessages;
+  $('save-job-config-btn').onclick=saveJobProfile;
+  const saveProfileBtn=$('save-job-profile-btn'); if(saveProfileBtn) saveProfileBtn.onclick=saveJobProfile;
+  const loadProfileBtn=$('load-job-profile-btn'); if(loadProfileBtn) loadProfileBtn.onclick=loadCurrentJobProfile;
+  $('save-mode-btn').onclick=saveMode;
+  $('mark-quality-btn').onclick=()=>markCandidate('candidate_starred','已标记为优质候选人');
+  $('mark-greeted-btn').onclick=()=>markCandidate('manual_sent_marked','已标记已打招呼');
+  $('analyze-chat-btn').onclick=analyzeChat;
+  $('add-followup-btn').onclick=addFollowup;
+  $('queue-add-btn').onclick=queueAdd;
+  $('queue-start-btn').onclick=()=>queueAction('/api/queue/start');
+  $('queue-pause-btn').onclick=()=>queueAction('/api/queue/pause');
+  $('queue-clear-btn').onclick=()=>queueAction('/api/queue/clear');
+  $('queue-stop-all-btn').onclick=()=>queueAction('/api/queue/stop');
+  $('message-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.copy||b.dataset.fill); const v=state.messageVariants[i]; if(!v)return; if(b.dataset.copy!==undefined){ await navigator.clipboard.writeText(v.message); feedback('已复制'); } if(b.dataset.fill!==undefined) await fillMessage(v.message,v.strategy); };
+  $('followup-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.followCopy||b.dataset.followFill||b.dataset.followHandled); const item=state.followups[i]; if(!item)return; if(b.dataset.followCopy!==undefined){ await navigator.clipboard.writeText(item.suggested_message); feedback('已复制'); } if(b.dataset.followFill!==undefined) await fillMessage(item.suggested_message,'followup'); if(b.dataset.followHandled!==undefined){ await track('followup_handled',{candidate_name:item.candidate_name,job_title:item.job_title||''}); b.textContent='已处理'; b.disabled=true; feedback('跟进已处理'); }};
+  $('fill-reply-1-btn').onclick=()=>fillMessage($('reply-1').textContent,'chat_reply_1');
+  $('fill-reply-2-btn').onclick=()=>fillMessage($('reply-2').textContent,'chat_reply_2');
+}
+
+window.addEventListener('DOMContentLoaded',async()=>{bind();await loadStoredJobIfMissing();renderJob();await checkService();await refreshContext();if(state.serviceOnline){await loadSettings();await refreshTodayStats();await refreshFollowups();}});
