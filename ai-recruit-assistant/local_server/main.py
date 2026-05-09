@@ -118,25 +118,139 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
 
 
+def _normalize_job_title_for_match(title: str) -> str:
+    text = re.sub(r"\s+", "", str(title or "").strip().lower())
+    text = text.replace("高级", "").replace("资深", "").replace("经理", "").replace("主管", "")
+    if any(word in text for word in ["高招", "高端招聘", "招聘hr", "招聘", "猎头", "hrbp", "人力资源"]):
+        return "recruitment_high_end"
+    if any(word in text for word in ["技术美术", "ta", "shader", "unity", "ue", "unreal", "虚幻"]):
+        return "technical_art"
+    if any(word in text for word in ["ai视频", "aigc", "comfyui", "stable", "分镜", "剪辑", "镜头"]):
+        return "ai_video"
+    if any(word in text for word in ["原画", "角色", "美宣", "场景", "3d", "游戏美术"]):
+        return "art"
+    return re.sub(r"[^0-9a-z\u4e00-\u9fa5]+", "", text)
+
+
 def init_job_profiles_table() -> None:
     conn = get_connection()
+    desired_columns = {
+        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "title": "TEXT NOT NULL",
+        "normalized_title": "TEXT DEFAULT ''",
+        "city": "TEXT DEFAULT ''",
+        "salary": "TEXT DEFAULT ''",
+        "experience_required": "TEXT DEFAULT ''",
+        "education_required": "TEXT DEFAULT ''",
+        "description": "TEXT DEFAULT ''",
+        "responsibilities": "TEXT DEFAULT ''",
+        "requirements": "TEXT DEFAULT ''",
+        "preferred_keywords": "TEXT DEFAULT '[]'",
+        "raw_text": "TEXT DEFAULT ''",
+        "source": "TEXT DEFAULT 'manual'",
+        "created_at": "TEXT NOT NULL",
+        "updated_at": "TEXT NOT NULL",
+    }
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS job_profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            normalized_title TEXT DEFAULT '',
             city TEXT DEFAULT '',
             salary TEXT DEFAULT '',
+            experience_required TEXT DEFAULT '',
+            education_required TEXT DEFAULT '',
             description TEXT DEFAULT '',
             responsibilities TEXT DEFAULT '',
             requirements TEXT DEFAULT '',
             preferred_keywords TEXT DEFAULT '[]',
+            raw_text TEXT DEFAULT '',
             source TEXT DEFAULT 'manual',
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            UNIQUE(title, city)
         )
         """
     )
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(job_profiles)").fetchall()}
+    for column, ddl in desired_columns.items():
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE job_profiles ADD COLUMN {column} {ddl}")
+    # Older builds created title as UNIQUE, which blocks multiple cities. Rebuild once
+    # when the autoindex list suggests a single-column title unique constraint.
+    indexes = conn.execute("PRAGMA index_list(job_profiles)").fetchall()
+    needs_rebuild = False
+    for idx in indexes:
+        idx_name = idx[1]
+        is_unique = bool(idx[2])
+        if not is_unique:
+            continue
+        cols = [info[2] for info in conn.execute(f"PRAGMA index_info({idx_name})").fetchall()]
+        if cols == ["title"]:
+            needs_rebuild = True
+            break
+    if needs_rebuild:
+        now = _now_iso()
+        conn.execute("ALTER TABLE job_profiles RENAME TO job_profiles_legacy")
+        conn.execute(
+            """
+            CREATE TABLE job_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                normalized_title TEXT DEFAULT '',
+                city TEXT DEFAULT '',
+                salary TEXT DEFAULT '',
+                experience_required TEXT DEFAULT '',
+                education_required TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                responsibilities TEXT DEFAULT '',
+                requirements TEXT DEFAULT '',
+                preferred_keywords TEXT DEFAULT '[]',
+                raw_text TEXT DEFAULT '',
+                source TEXT DEFAULT 'manual',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(title, city)
+            )
+            """
+        )
+        legacy_cols = {row[1] for row in conn.execute("PRAGMA table_info(job_profiles_legacy)").fetchall()}
+        rows = conn.execute("SELECT * FROM job_profiles_legacy").fetchall()
+        for row in rows:
+            data = {key: row[key] for key in legacy_cols}
+            title = str(data.get("title") or "").strip()
+            if not title:
+                continue
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO job_profiles
+                (title, normalized_title, city, salary, experience_required, education_required, description, responsibilities, requirements, preferred_keywords, raw_text, source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title,
+                    data.get("normalized_title") or _normalize_job_title_for_match(title),
+                    data.get("city") or "",
+                    data.get("salary") or "",
+                    data.get("experience_required") or "",
+                    data.get("education_required") or "",
+                    data.get("description") or "",
+                    data.get("responsibilities") or "",
+                    data.get("requirements") or "",
+                    data.get("preferred_keywords") or "[]",
+                    data.get("raw_text") or "",
+                    data.get("source") or "manual",
+                    data.get("created_at") or now,
+                    data.get("updated_at") or now,
+                ),
+            )
+        conn.execute("DROP TABLE job_profiles_legacy")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_job_profiles_title_city ON job_profiles(title, city)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_profiles_normalized_title ON job_profiles(normalized_title)")
+    rows = conn.execute("SELECT id, title, normalized_title FROM job_profiles WHERE normalized_title = '' OR normalized_title IS NULL").fetchall()
+    for row in rows:
+        conn.execute("UPDATE job_profiles SET normalized_title = ? WHERE id = ?", (_normalize_job_title_for_match(row["title"]), row["id"]))
     conn.commit()
     conn.close()
 
@@ -163,16 +277,26 @@ def _keywords_to_list(value) -> list[str]:
     return [re.sub(r"\s+", " ", str(item)).strip() for item in items if str(item).strip()]
 
 
+
+def _text_block(value) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
+
 def _profile_row_to_dict(row) -> dict:
     return {
         "id": row["id"],
         "title": row["title"],
+        "normalized_title": row["normalized_title"] or _normalize_job_title_for_match(row["title"]),
         "city": row["city"] or "",
         "salary": row["salary"] or "",
+        "experience_required": row["experience_required"] or "",
+        "education_required": row["education_required"] or "",
         "description": row["description"] or "",
         "responsibilities": row["responsibilities"] or "",
         "requirements": row["requirements"] or "",
         "preferred_keywords": _keywords_to_list(row["preferred_keywords"] or "[]"),
+        "raw_text": row["raw_text"] or "",
         "source": row["source"] or "manual",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -180,18 +304,93 @@ def _profile_row_to_dict(row) -> dict:
     }
 
 
+def _job_profile_find_row(conn, title: str, city: str = ""):
+    row, _ = _job_profile_find_row_with_match_type(conn, title, city)
+    return row
+
+
+def _job_profile_find_row_with_match_type(conn, title: str, city: str = ""):
+    normalized_title = _normalise_title(title)
+    normalized_match = _normalize_job_title_for_match(normalized_title)
+    city = str(city or "").strip()
+    if normalized_title and city:
+        row = conn.execute("SELECT * FROM job_profiles WHERE title = ? AND city = ?", (normalized_title, city)).fetchone()
+        if row:
+            return row, "title_city"
+    if normalized_title:
+        row = conn.execute("SELECT * FROM job_profiles WHERE title = ? ORDER BY CASE WHEN city = ? THEN 0 WHEN city = '' THEN 1 ELSE 2 END, updated_at DESC", (normalized_title, city)).fetchone()
+        if row:
+            return row, "title"
+    if normalized_match:
+        row = conn.execute("SELECT * FROM job_profiles WHERE normalized_title = ? ORDER BY CASE WHEN city = ? THEN 0 WHEN city = '' THEN 1 ELSE 2 END, updated_at DESC", (normalized_match, city)).fetchone()
+        if row:
+            return row, "normalized_title"
+    return None, "none"
+
+
 @app.get("/api/job-profile")
-def job_profile_get(title: str) -> dict:
+def job_profile_get(title: str, city: str = "") -> dict:
     init_job_profiles_table()
     normalized = _normalise_title(title)
     if not normalized:
         raise HTTPException(status_code=400, detail="缺少岗位名称")
     conn = get_connection()
-    row = conn.execute("SELECT * FROM job_profiles WHERE title = ?", (normalized,)).fetchone()
+    row, match_type = _job_profile_find_row_with_match_type(conn, normalized, city)
     conn.close()
     if not row:
         return {"ok": False, "profile": None, "message": "未找到该岗位配置"}
-    return {"ok": True, "profile": _profile_row_to_dict(row)}
+    return {"ok": True, "profile": _profile_row_to_dict(row), "match_type": match_type}
+
+
+def _profile_match_score(profile: dict, title: str, city: str, query_keywords: list[str]) -> tuple[int, list[str]]:
+    score = 0
+    reasons: list[str] = []
+    normalized_title = _normalise_title(title)
+    normalized_match = _normalize_job_title_for_match(normalized_title)
+    if normalized_title and profile.get("title") == normalized_title:
+        score += 50
+        reasons.append("标题相同")
+    if normalized_match and profile.get("normalized_title") == normalized_match:
+        score += 40
+        reasons.append("归一标题相同")
+    if city and profile.get("city") == city:
+        score += 20
+        reasons.append("同城市")
+    profile_keywords = set(_keywords_to_list(profile.get("preferred_keywords") or []))
+    query_set = set(query_keywords)
+    overlap = sorted(profile_keywords & query_set)
+    if overlap:
+        score += min(20, len(overlap) * 5) or 20
+        reasons.append(f"关键词重合：{'、'.join(overlap[:4])}")
+    return score, reasons
+
+
+@app.get("/api/job-profile/match")
+def job_profile_match(title: str, city: str = "", keywords: str = "") -> dict:
+    init_job_profiles_table()
+    query_keywords = _keywords_to_list(keywords)
+    normalized_title = _normalise_title(title)
+    if normalized_title:
+        query_keywords.extend(re.split(r"[-_/｜|\s]+", normalized_title))
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM job_profiles ORDER BY updated_at DESC").fetchall()
+    conn.close()
+    matches = []
+    for row in rows:
+        profile = _profile_row_to_dict(row)
+        score, reasons = _profile_match_score(profile, normalized_title, city, query_keywords)
+        if score >= 40:
+            matches.append({
+                "id": profile["id"],
+                "title": profile["title"],
+                "city": profile["city"],
+                "salary": profile["salary"],
+                "score": score,
+                "reason": "/".join(reasons) or "标题相似",
+                "profile": profile,
+            })
+    matches.sort(key=lambda item: item["score"], reverse=True)
+    return {"ok": True, "matches": matches[:5]}
 
 
 @app.get("/api/job-profiles")
@@ -210,37 +409,65 @@ def job_profile_save(payload: dict) -> dict:
     if not title:
         raise HTTPException(status_code=400, detail="缺少岗位名称，无法保存岗位配置")
     now = _now_iso()
+    normalized_title = _normalize_job_title_for_match(title)
     city = str(payload.get("city") or "").strip()
     salary = str(payload.get("salary") or "").strip()
-    description = str(payload.get("description") or "").strip()
-    responsibilities = str(payload.get("responsibilities") or "").strip()
-    requirements = str(payload.get("requirements") or "").strip()
+    experience_required = str(payload.get("experience_required") or "").strip()
+    education_required = str(payload.get("education_required") or "").strip()
+    description = _text_block(payload.get("description"))
+    responsibilities = _text_block(payload.get("responsibilities"))
+    requirements = _text_block(payload.get("requirements"))
     preferred_keywords = json.dumps(_keywords_to_list(payload.get("preferred_keywords") or []), ensure_ascii=False)
+    raw_text = _text_block(payload.get("raw_text"))
     source = str(payload.get("source") or "manual").strip() or "manual"
     conn = get_connection()
-    existing = conn.execute("SELECT created_at FROM job_profiles WHERE title = ?", (title,)).fetchone()
+    existing = None
+    if city:
+        existing = conn.execute("SELECT * FROM job_profiles WHERE title = ? AND city = ?", (title, city)).fetchone()
+    if not existing:
+        existing = conn.execute("SELECT * FROM job_profiles WHERE title = ? AND (city = '' OR ? = '') ORDER BY updated_at DESC", (title, city)).fetchone()
+    if not existing:
+        existing = conn.execute("SELECT * FROM job_profiles WHERE normalized_title = ? AND (city = ? OR city = '' OR ? = '') ORDER BY updated_at DESC", (normalized_title, city, city)).fetchone()
     created_at = existing["created_at"] if existing else now
-    conn.execute(
-        """
-        INSERT INTO job_profiles (title, city, salary, description, responsibilities, requirements, preferred_keywords, source, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(title) DO UPDATE SET
-            city = excluded.city,
-            salary = excluded.salary,
-            description = excluded.description,
-            responsibilities = excluded.responsibilities,
-            requirements = excluded.requirements,
-            preferred_keywords = excluded.preferred_keywords,
-            source = excluded.source,
-            updated_at = excluded.updated_at
-        """,
-        (title, city, salary, description, responsibilities, requirements, preferred_keywords, source, created_at, now),
-    )
+    target_id = existing["id"] if existing else None
+    values = (title, normalized_title, city, salary, experience_required, education_required, description, responsibilities, requirements, preferred_keywords, raw_text, source, created_at, now)
+    if target_id:
+        conn.execute(
+            """
+            UPDATE job_profiles SET
+                title = ?, normalized_title = ?, city = ?, salary = ?, experience_required = ?, education_required = ?,
+                description = ?, responsibilities = ?, requirements = ?, preferred_keywords = ?, raw_text = ?, source = ?,
+                created_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            values + (target_id,),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO job_profiles
+            (title, normalized_title, city, salary, experience_required, education_required, description, responsibilities, requirements, preferred_keywords, raw_text, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(title, city) DO UPDATE SET
+                normalized_title = excluded.normalized_title,
+                salary = excluded.salary,
+                experience_required = excluded.experience_required,
+                education_required = excluded.education_required,
+                description = excluded.description,
+                responsibilities = excluded.responsibilities,
+                requirements = excluded.requirements,
+                preferred_keywords = excluded.preferred_keywords,
+                raw_text = excluded.raw_text,
+                source = excluded.source,
+                updated_at = excluded.updated_at
+            """,
+            values,
+        )
     conn.commit()
-    row = conn.execute("SELECT * FROM job_profiles WHERE title = ?", (title,)).fetchone()
+    row = _job_profile_find_row(conn, title, city)
     conn.close()
     profile = _profile_row_to_dict(row)
-    log_event("job_profile_saved", f"{title}:{source}")
+    log_event("job_profile_saved", f"{title}:{city}:{source}")
     return {"ok": True, "profile": profile}
 
 

@@ -364,31 +364,41 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
 
   function parseJobModalTop(rawText) {
     const raw = cleanText(rawText);
-    const topLines = linesOf(raw).slice(0, 12);
+    const topLines = linesOf(raw).slice(0, 16).filter((line) => !includesAny(line, NAV_WORDS));
     const compactTop = oneLine(topLines.join(" "));
     const salary = (compactTop.match(SALARY_RE) || raw.match(SALARY_RE) || [""])[0].replace(/\s+/g, "");
     let title = "";
+    const titleLike = (line) => {
+      const value = oneLine(line)
+        .replace(SALARY_RE, "")
+        .replace(CITY_RE, "")
+        .replace(EDU_REQ_RE, "")
+        .replace(JOB_EXP_RE, "")
+        .replace(/^(职位详情|薪资详情|岗位职责|任职要求|工作地址)[:：\s]*/, "")
+        .trim();
+      return value;
+    };
     for (const line of topLines) {
-      if (!salary || !line.includes(salary.replace(/\s+/g, ""))) {
-        const lineSalary = (line.match(SALARY_RE) || [""])[0];
-        if (!lineSalary) continue;
+      const lineSalary = (line.match(SALARY_RE) || [""])[0];
+      if (lineSalary) {
         const beforeSalary = oneLine(line.slice(0, line.indexOf(lineSalary)));
         if (isValidJobTitle(beforeSalary)) { title = beforeSalary; break; }
-        continue;
       }
-      const beforeSalary = oneLine(line.replace(salary, "").replace(SALARY_RE, ""));
-      if (isValidJobTitle(beforeSalary)) { title = beforeSalary; break; }
     }
     if (!title) {
       const salaryLineIndex = topLines.findIndex((line) => SALARY_RE.test(line));
-      const previous = salaryLineIndex > 0 ? topLines[salaryLineIndex - 1] : "";
+      const previous = salaryLineIndex > 0 ? titleLike(topLines[salaryLineIndex - 1]) : "";
       if (isValidJobTitle(previous)) title = previous;
     }
+    if (!title) {
+      title = topLines.map(titleLike).find((line) => isValidJobTitle(line) && !/薪资详情|职位详情|岗位职责|任职要求|工作地址|发布|刷新|编辑/.test(line)) || "";
+    }
     if (!title) title = parseJobTitleFromText(raw);
-    const metaLine = topLines.find((line) => CITY_RE.test(line) && (EDU_REQ_RE.test(line) || JOB_EXP_RE.test(line))) || compactTop;
+    const metaLine = topLines.find((line) => CITY_RE.test(line) && (EDU_REQ_RE.test(line) || JOB_EXP_RE.test(line) || SALARY_RE.test(line))) || compactTop;
+    const addressLine = linesOf(raw).find((line) => /工作地址|工作地点|地址/.test(line) && CITY_RE.test(line)) || "";
     return {
       title,
-      city: (metaLine.match(CITY_RE) || raw.match(CITY_RE) || [""])[0],
+      city: (metaLine.match(CITY_RE) || addressLine.match(CITY_RE) || raw.match(CITY_RE) || [""])[0],
       salary,
       education_required: (metaLine.match(EDU_REQ_RE) || raw.match(EDU_REQ_RE) || [""])[0],
       experience_required: (metaLine.match(JOB_EXP_RE) || raw.match(JOB_EXP_RE) || [""])[0],
@@ -398,27 +408,28 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   function jobDetailModalScore(node) {
     const text = textOf(node);
     const parsed = parseJobModalTop(text);
-    const signals = ["薪资详情", "职位详情", "岗位职责", "任职要求", "工作地址"].filter((word) => text.includes(word));
+    const signals = ["薪资详情", "职位详情", "职位描述", "岗位职责", "职位职责", "工作内容", "任职要求", "职位要求", "技能要求", "工作地址", "工作地点"].filter((word) => text.includes(word));
     const rect = node.getBoundingClientRect();
-    let score = signals.length * 25;
+    let score = signals.length * 18;
     const reasons = [];
     if (signals.length) reasons.push(`岗位详情信号：${signals.join("/")}`);
     if (parsed.title) { score += 20; reasons.push(`标题：${parsed.title}`); }
     if (parsed.salary) { score += 20; reasons.push(`薪资：${parsed.salary}`); }
     if (parsed.city) { score += 10; reasons.push(`城市：${parsed.city}`); }
-    if (/modal|dialog|drawer|job|position/i.test(`${node.className || ""} ${node.id || ""}`)) { score += 10; reasons.push("类名像岗位弹窗"); }
-    if (rect.width > 360 && rect.height > 260) { score += 5; reasons.push("面积像详情弹窗"); }
-    return { ...parsed, score, reason: reasons.join("；") || "未命中岗位详情弹窗特征" };
+    if (/modal|dialog|drawer|job|position/i.test(`${node.className || ""} ${node.id || ""}`)) { score += 10; reasons.push("类名像岗位详情"); }
+    if (rect.width > 360 && rect.height > 220) { score += 5; reasons.push("面积像详情区域"); }
+    return { ...parsed, score, reason: reasons.join("；") || "未命中岗位详情特征" };
   }
 
   function jobDetailModalCandidates() {
     const nodes = [];
-    for (const node of queryVisible(["[role='dialog']", ".modal", ".dialog", ".drawer", ".job-detail", ".position-detail", "[class*='modal']", "[class*='dialog']", "[class*='drawer']", "[class*='job-detail']", "[class*='position-detail']", "section", "article", "div"])) {
+    for (const node of queryVisible(["[role='dialog']", ".modal", ".dialog", ".drawer", ".job-detail", ".position-detail", ".job-sec", ".job-box", "[class*='modal']", "[class*='dialog']", "[class*='drawer']", "[class*='job-detail']", "[class*='position-detail']", "main", "section", "article", "div"])) {
       const text = textOf(node);
-      if (text.length < 30 || text.length > 12000 || isNavLike(text, node) || isChatListOrNavigationElement(node)) continue;
-      if (!/(薪资详情|职位详情|岗位职责|任职要求|工作地址)/.test(text)) continue;
+      if (text.length < 60 || text.length > 16000 || isNavLike(text, node) || isChatListOrNavigationElement(node)) continue;
+      if (!/(薪资详情|职位详情|职位描述|岗位职责|职位职责|工作内容|你将负责|任职要求|职位要求|技能要求|我们希望你|工作地址|工作地点)/.test(text)) continue;
+      if (/期望职位|工作经历|教育经历/.test(text) && !/职位详情|岗位职责|任职要求|工作地址/.test(text)) continue;
       const scored = jobDetailModalScore(node);
-      if (scored.score >= 70 && scored.title && scored.salary) nodes.push({ node, ...scored });
+      if (scored.score >= 55 && scored.title && (scored.salary || /岗位职责|任职要求|职位描述/.test(text))) nodes.push({ node, ...scored });
     }
     return nodes.sort((a, b) => b.score - a.score || textOf(a.node).length - textOf(b.node).length);
   }
@@ -468,19 +479,51 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return candidates.sort((a, b) => b.score - a.score || textOf(a.node).length - textOf(b.node).length);
   }
 
-  function splitJobDetail(rawText) {
+  function collectSectionLines(rawText, headers, stopHeaders) {
     const lines = linesOf(rawText).filter((line) => !includesAny(line, NAV_WORDS));
-    const responsibilities = lines.filter((line) => /岗位职责|工作内容|你将负责|负责/.test(line)).slice(0, 12);
-    const requirements = lines.filter((line) => /任职要求|技能要求|职位要求|我们希望你|要求|熟悉|经验|能力/.test(line)).slice(0, 16);
+    const out = [];
+    let active = false;
+    for (const line of lines) {
+      if (headers.some((pattern) => pattern.test(line))) {
+        active = true;
+        const stripped = line.replace(new RegExp(headers.map((p) => p.source).join("|")), "").replace(/^[:：\s]+/, "").trim();
+        if (stripped && stripped.length > 2) out.push(stripped);
+        continue;
+      }
+      if (active && stopHeaders.some((pattern) => pattern.test(line))) break;
+      if (active && line.length >= 2 && line.length <= 220) out.push(line);
+      if (out.length >= 16) break;
+    }
+    return uniq(out).slice(0, 16);
+  }
+
+  function splitJobDetail(rawText) {
+    const responsibilities = collectSectionLines(
+      rawText,
+      [/岗位职责/, /职位职责/, /工作内容/, /你将负责/, /职位描述/, /项目方向/],
+      [/任职要求/, /职位要求/, /技能要求/, /我们希望你/, /加分项/, /工作地址/, /薪资详情/],
+    );
+    const requirements = collectSectionLines(
+      rawText,
+      [/任职要求/, /职位要求/, /技能要求/, /我们希望你/, /加分项/],
+      [/岗位职责/, /职位职责/, /工作内容/, /你将负责/, /职位描述/, /工作地址/, /薪资详情/],
+    );
+    const lines = linesOf(rawText).filter((line) => !includesAny(line, NAV_WORDS));
+    const fallbackResponsibilities = lines.filter((line) => /负责|推进|完成|参与|协作/.test(line)).slice(0, 12);
+    const fallbackRequirements = lines.filter((line) => /要求|熟悉|经验|能力|优先|掌握|本科|大专/.test(line)).slice(0, 16);
     const preferred_keywords = uniq([...safeKeywords(rawText, [...SKILL_WORDS, ...PROJECT_WORDS]), ...lines.filter((line) => /加分项|优先|项目方向/.test(line)).slice(0, 8)]);
-    return { responsibilities, requirements, preferred_keywords };
+    return {
+      responsibilities: responsibilities.length ? responsibilities : fallbackResponsibilities,
+      requirements: requirements.length ? requirements : fallbackRequirements,
+      preferred_keywords,
+    };
   }
 
   function buildJobFromCandidate(item, source) {
     const rawText = textOf(item.node);
     const detail = splitJobDetail(rawText);
     const modalParsed = source === "job_detail_modal" ? parseJobModalTop(rawText) : {};
-    const jdComplete = source === "job_detail_modal" || (source !== "chat_job_card" && Boolean(rawText && (detail.responsibilities.length || detail.requirements.length || /职位描述|岗位职责|任职要求|技能要求|加分项|工作内容|职位要求|你将负责|我们希望你/.test(rawText))));
+    const jdComplete = source === "job_detail_modal" ? Boolean((modalParsed.title || item.title) && rawText.length > 80 && (detail.responsibilities.length || detail.requirements.length)) : (source !== "chat_job_card" && Boolean(rawText && (detail.responsibilities.length || detail.requirements.length || /职位描述|岗位职责|任职要求|技能要求|加分项|工作内容|职位要求|你将负责|我们希望你/.test(rawText))));
     return {
       title: modalParsed.title || item.title,
       city: source === "chat_job_card" ? "" : (modalParsed.city || (rawText.match(CITY_RE) || [""])[0]),

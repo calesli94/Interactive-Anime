@@ -13,6 +13,8 @@ const state = {
   chatResult:null,
   todayStats:null,
   followups:[],
+  jobProfileMatches:[],
+  currentJobContext:null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -37,6 +39,39 @@ function splitKeywords(value){
 }
 function linesText(value){ return Array.isArray(value) ? value.join('\n') : String(value||''); }
 function setJobProfileStatus(text){ const el=$('job-profile-status'); if(el) el.textContent=text||'-'; }
+function setCurrentJobContextStatus(text){ const el=$('current-job-context-status'); if(el) el.textContent=text||'-'; }
+function normalizeTitleForClient(title=''){
+  const text=String(title||'').replace(/\s+/g,'').toLowerCase().replace(/高级|资深|经理|主管/g,'');
+  if(/高招|高端招聘|招聘hr|招聘|猎头|hrbp|人力资源/.test(text)) return 'recruitment_high_end';
+  if(/技术美术|ta|shader|unity|ue|unreal|虚幻/.test(text)) return 'technical_art';
+  if(/ai视频|aigc|comfyui|stable|分镜|剪辑|镜头/.test(text)) return 'ai_video';
+  if(/原画|角色|美宣|场景|3d|游戏美术/.test(text)) return 'art';
+  return text.replace(/[^0-9a-z\u4e00-\u9fa5]+/g,'');
+}
+function titlesSimilar(a='',b=''){
+  const na=normalizeTitleForClient(a), nb=normalizeTitleForClient(b);
+  return Boolean(na && nb && (na===nb || String(a).includes(b) || String(b).includes(a)));
+}
+function fullJobFromProfile(profile, source='profile_store', status='已从岗位库加载岗位要求'){
+  return {
+    ...(state.job||{}),
+    id: profile.id,
+    title: profile.title || state.job?.title || '',
+    city: profile.city || state.job?.city || '',
+    salary: profile.salary || state.job?.salary || '',
+    experience_required: profile.experience_required || state.job?.experience_required || '',
+    education_required: profile.education_required || state.job?.education_required || '',
+    description: profile.description || '',
+    responsibilities: splitLines(profile.responsibilities),
+    requirements: splitLines(profile.requirements),
+    preferred_keywords: splitKeywords(profile.preferred_keywords),
+    raw_text: profile.raw_text || '',
+    jd_complete: Boolean(profile.jd_complete || profile.description || profile.responsibilities || profile.requirements),
+    source,
+    profile_status: status,
+    warning: '',
+  };
+}
 function isReliableContext(){ return Boolean(state.job?.title) && hasJobDetail() && state.candidate?.profile_complete !== false; }
 function renderReliability(){
   const jobSource=state.job?.source||'-';
@@ -164,14 +199,34 @@ function renderContext(){
   renderReliability();
 }
 
-async function saveJobIfAvailable(){
-  if(state.job?.title) await chrome.storage.local.set({lastJob:state.job});
+async function saveCurrentJobContext(job=state.job){
+  if(!job?.title) return;
+  const currentJobContext={
+    title:job.title||'', city:job.city||'', salary:job.salary||'',
+    experience_required:job.experience_required||'', education_required:job.education_required||'',
+    description:job.description||'', responsibilities:job.responsibilities||[], requirements:job.requirements||[],
+    preferred_keywords:job.preferred_keywords||job.keywords||[], raw_text:job.raw_text||'',
+    source:job.source||'', jd_complete:Boolean(job.jd_complete), updated_at:new Date().toISOString(),
+  };
+  state.currentJobContext=currentJobContext;
+  await chrome.storage.local.set({currentJobContext,lastJob:currentJobContext});
+  setCurrentJobContextStatus(`已缓存：${currentJobContext.title} / ${currentJobContext.source||'-'}`);
+}
+async function saveJobIfAvailable(){ if(state.job?.title) await saveCurrentJobContext(state.job); }
+
+async function restoreCurrentJobContext({force=false}={}){
+  const data=await chrome.storage.local.get(['currentJobContext','lastJob']);
+  const cached=data.currentJobContext||data.lastJob;
+  if(!cached?.title) return false;
+  state.currentJobContext=cached;
+  setCurrentJobContextStatus(`已缓存：${cached.title} / ${cached.source||'-'}`);
+  if(force || !state.job?.title){ state.job={...(state.job||{}),...cached,profile_status:'已恢复当前岗位上下文'}; return true; }
+  return false;
 }
 
 async function loadStoredJobIfMissing(){
   if(state.job?.title) return;
-  const data=await chrome.storage.local.get('lastJob');
-  if(data.lastJob?.title && data.lastJob.source==='manual') state.job=data.lastJob;
+  await restoreCurrentJobContext({force:true});
 }
 
 function ensureJobRequirementRows(){
@@ -209,11 +264,27 @@ function renderJob(){
   set('job-jd-complete', job.jd_complete?'完整':'不完整');
   set('job-warning', job.warning || (job.title&&!hasJobDetail()?'当前岗位缺少JD，请补充岗位要求后保存到岗位要求库。':''));
   setJobProfileStatus(job.profile_status || (job.title ? (hasJobDetail() ? '已加载岗位要求库' : '当前岗位缺少JD，请补充岗位要求') : '-'));
-  const desc=$('job-description-manual'); if(desc && (!desc.value || job.source==='profile_store')) desc.value=job.description||'';
-  const resp=$('job-responsibilities-manual'); if(resp && (!resp.value || job.source==='profile_store')) resp.value=linesText(job.responsibilities||[]);
-  const req=$('job-requirements-manual'); if(req && (!req.value || job.source==='profile_store')) req.value=linesText(job.requirements||[]);
-  const keywords=$('job-keywords-manual'); if(keywords && (!keywords.value || job.source==='profile_store')) keywords.value=(job.preferred_keywords||job.keywords||[]).join(',');
+  setCurrentJobContextStatus(state.currentJobContext?.title ? `已缓存：${state.currentJobContext.title} / ${state.currentJobContext.source||'-'}` : '-');
+  renderJobProfileMatches();
+  const desc=$('job-description-manual'); if(desc && (!desc.value || ['profile_store','profile_store_match','job_detail_modal'].includes(job.source))) desc.value=job.description||'';
+  const resp=$('job-responsibilities-manual'); if(resp && (!resp.value || ['profile_store','profile_store_match','job_detail_modal'].includes(job.source))) resp.value=linesText(job.responsibilities||[]);
+  const req=$('job-requirements-manual'); if(req && (!req.value || ['profile_store','profile_store_match','job_detail_modal'].includes(job.source))) req.value=linesText(job.requirements||[]);
+  const keywords=$('job-keywords-manual'); if(keywords && (!keywords.value || ['profile_store','profile_store_match','job_detail_modal'].includes(job.source))) keywords.value=(job.preferred_keywords||job.keywords||[]).join(',');
   renderReliability();
+}
+
+function renderJobProfileMatches(){
+  const box=$('job-profile-matches');
+  if(!box) return;
+  box.innerHTML='';
+  const matches=state.jobProfileMatches||[];
+  if(!matches.length){ box.textContent='暂无相似岗位配置'; return; }
+  matches.slice(0,3).forEach((item,i)=>{
+    const div=document.createElement('div');
+    div.className='reply-box job-profile-match';
+    div.innerHTML=`<p><b>${item.title||item.profile?.title||'-'}</b> / ${item.city||item.profile?.city||'-'} / ${item.salary||item.profile?.salary||'-'} / 匹配分 ${item.score}</p><p>${item.reason||''}</p><button data-use-job-match="${i}">使用此岗位配置</button>`;
+    box.appendChild(div);
+  });
 }
 
 function renderCandidate(){
@@ -235,39 +306,44 @@ function renderChatContext(){
   $('chat-context-warning').textContent=(cName&&chName&&cName!==chName)?'当前聊天对象与已分析候选人不一致，请刷新上下文':'';
 }
 
-function applyJobProfile(profile, status='已加载岗位要求库'){
+function applyJobProfile(profile, status='已加载岗位要求库', source='profile_store'){
   if(!profile) return false;
-  state.job={
-    ...(state.job||{}),
-    title: profile.title || state.job?.title || '',
-    city: profile.city || state.job?.city || '',
-    salary: profile.salary || state.job?.salary || '',
-    description: profile.description || '',
-    responsibilities: splitLines(profile.responsibilities),
-    requirements: splitLines(profile.requirements),
-    preferred_keywords: splitKeywords(profile.preferred_keywords),
-    jd_complete: Boolean(profile.jd_complete || profile.description || profile.responsibilities || profile.requirements),
-    source: profile.source === 'manual' ? 'profile_store' : (profile.source || 'profile_store'),
-    profile_status: status,
-    warning: '',
-  };
+  state.job=fullJobFromProfile(profile, source, status);
+  state.jobProfileMatches=[];
   renderJob();
   return true;
 }
 
-async function loadJobProfileByTitle(title, {silent=false}={}){
+async function loadJobProfileByTitle(title, {silent=false, city=''}={}){
   const jobTitle=String(title||'').trim();
+  const jobCity=String(city || state.job?.city || '').trim();
   if(!jobTitle){ if(!silent) feedback('请先识别岗位名称'); return false; }
   try{
-    const data=await api(`/api/job-profile?title=${encodeURIComponent(jobTitle)}`);
+    const data=await api(`/api/job-profile?title=${encodeURIComponent(jobTitle)}&city=${encodeURIComponent(jobCity)}`);
     if(data?.ok && data.profile){
-      applyJobProfile(data.profile,'已加载岗位要求库');
-      if(!silent) feedback(`已加载岗位要求库：${jobTitle}`);
+      if(data.match_type==='normalized_title' && data.profile.title !== jobTitle){
+        state.jobProfileMatches=[{id:data.profile.id,title:data.profile.title,city:data.profile.city,salary:data.profile.salary,score:60,reason:'归一标题相似',profile:data.profile}];
+        state.job={...(state.job||{}),profile_status:'发现相似岗位配置',warning:'发现相似岗位配置，请选择使用'};
+        renderJob();
+        if(!silent) feedback('发现相似岗位配置，请选择使用');
+        return false;
+      }
+      applyJobProfile(data.profile,'已从岗位库加载岗位要求','profile_store');
+      await saveCurrentJobContext(state.job);
+      if(!silent) feedback(`已从岗位库加载岗位要求：${data.profile.title}`);
       return true;
     }
-    state.job={...(state.job||{}),jd_complete:false,profile_status:'当前岗位缺少JD，请补充岗位要求后保存',warning:'当前岗位缺少JD，请补充岗位要求后保存到岗位要求库。'};
+    const matchData=await api(`/api/job-profile/match?title=${encodeURIComponent(jobTitle)}&city=${encodeURIComponent(jobCity)}`);
+    state.jobProfileMatches=matchData?.matches||[];
+    if(state.jobProfileMatches.length){
+      state.job={...(state.job||{}),profile_status:'发现相似岗位配置',warning:'发现相似岗位配置，请选择使用或打开岗位详情页抓取'};
+      renderJob();
+      if(!silent) feedback('发现相似岗位配置，请选择使用');
+      return false;
+    }
+    state.job={...(state.job||{}),jd_complete:false,profile_status:'岗位库暂无该岗位',warning:'岗位库暂无该岗位，请打开岗位详情页抓取或手动补充'};
     renderJob();
-    if(!silent) feedback(data?.message || '未找到该岗位配置，请补充岗位要求后保存');
+    if(!silent) feedback(data?.message || '岗位库暂无该岗位，请打开岗位详情页抓取或手动补充');
     return false;
   }catch(e){
     if(!silent) feedback(`加载岗位要求库失败：${e.message}`,'warn');
@@ -288,11 +364,11 @@ async function saveJobProfile(){
   const preferred_keywords=splitKeywords($('job-keywords-manual')?.value||'');
   if(!description && !responsibilities && !requirements){ feedback('请至少粘贴岗位描述、岗位职责或任职要求后再保存'); return; }
   try{
-    const data=await api('/api/job-profile/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,city:state.job?.city||'',salary:state.job?.salary||'',description,responsibilities,requirements,preferred_keywords,source:'manual'})});
+    const data=await api('/api/job-profile/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,city:state.job?.city||'',salary:state.job?.salary||'',experience_required:state.job?.experience_required||'',education_required:state.job?.education_required||'',description,responsibilities,requirements,preferred_keywords,raw_text:state.job?.raw_text||'',source:state.job?.source||'manual'})});
     if(data?.ok && data.profile){
-      applyJobProfile(data.profile,'已保存岗位配置');
-      await saveJobIfAvailable();
-      feedback(`已保存岗位配置：${title}`);
+      applyJobProfile(data.profile,'岗位已保存到岗位库','profile_store');
+      await saveCurrentJobContext(state.job);
+      feedback(`岗位已保存到岗位库：${title}`);
     }else feedback('保存岗位配置失败');
   }catch(e){ feedback(`保存岗位配置失败：${e.message}`,'warn'); }
 }
@@ -303,9 +379,20 @@ async function refreshContext(){
     const ctx=await sendToContent({type:'EXTRACT_PAGE_CONTEXT'});
     if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入','warn'); return; }
     state.pageContext=ctx;
-    state.job=ctx.job?.title ? ctx.job : state.job||{};
+    const detectedJob=ctx.job?.title ? ctx.job : null;
+    await restoreCurrentJobContext({force:false});
+    if(detectedJob){
+      if(state.currentJobContext?.title && titlesSimilar(detectedJob.title,state.currentJobContext.title) && !detectedJob.jd_complete){
+        state.job={...detectedJob,...state.currentJobContext,source:state.currentJobContext.source||'current_job_context',profile_status:'已使用当前岗位上下文缓存'};
+      }else if(state.job?.title && !titlesSimilar(detectedJob.title,state.job.title)){
+        state.job={...detectedJob,warning:`识别到新岗位：${detectedJob.title}，如需切换请加载/保存岗位库`};
+        feedback(`识别到新岗位：${detectedJob.title}，请确认是否切换`,'warn');
+      }else{
+        state.job=detectedJob;
+      }
+    }
     await loadStoredJobIfMissing();
-    if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true});
+    if(state.job?.title && !hasJobDetail()) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
     state.candidate=ctx.candidate||{};
     state.chat=ctx.chat||{};
     state.contextId=ctx.context_id||'';
@@ -328,10 +415,16 @@ async function refreshJob(){
     const res=await sendToContent({type:'EXTRACT_JOB'});
     if(res?.ok){
       state.job=res.job?.title ? res.job : state.job||{};
-      if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true});
+      if(state.job?.title && state.job.jd_complete){
+        state.job.profile_status='已识别完整岗位JD，可保存到岗位库';
+        state.job.warning='已识别完整岗位JD，可保存到岗位库';
+        state.jobProfileMatches=[];
+      }else if(state.job?.title){
+        await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
+      }
       await saveJobIfAvailable();
       renderJob();
-      feedback(state.job?.title?(hasJobDetail()?'岗位信息已刷新，并已加载岗位要求库':'岗位名称已刷新，但当前岗位缺少JD，请补充岗位要求'):'未识别岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位');
+      feedback(state.job?.title?(state.job.jd_complete?'已识别完整岗位JD，可保存到岗位库':(hasJobDetail()?'岗位信息已刷新，并已加载岗位要求库':'岗位名称已刷新，但当前岗位缺少JD，请补充岗位要求')):'未识别岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位');
     } else {
       feedback(res?.error || '未能读取岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位','warn');
     }
@@ -362,6 +455,8 @@ function jobConfigForApi(){
     job_title: job.title||'',
     city: job.city||'',
     salary: job.salary||'',
+    experience_required: job.experience_required||'',
+    education_required: job.education_required||'',
     description,
     responsibilities,
     requirements,
@@ -369,7 +464,7 @@ function jobConfigForApi(){
     preferred_keywords: preferred_keywords.length ? preferred_keywords : (job.keywords||requirements||[]),
     jd_complete: Boolean(job.jd_complete || description || requirements.length || responsibilities.length),
     source: job.source||'',
-    raw_text: '',
+    raw_text: job.raw_text||'',
     urgency:'high',
   };
 }
@@ -396,7 +491,7 @@ async function analyzeCandidate(){
   renderCandidate();
   if(!state.candidate?.name){ feedback('未识别候选人姓名，请确认当前页面为候选人详情或聊天页'); return; }
   if(!state.job?.title){ feedback('未识别当前沟通岗位，请先刷新上下文'); return; }
-  if(!hasJobDetail()) feedback('当前仅有岗位名称，缺少岗位职责/JD，本次分析可信度低，建议补充岗位要求后重新分析');
+  if(!hasJobDetail()) feedback('当前岗位只有名称，没有岗位职责/任职要求，分析可信度较低。建议先保存岗位要求库。');
   try{
     const data=await api('/api/priority/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,job_config:jobConfigForApi(),context_id:state.contextId})});
     state.priorityResult={...data,context_id:state.contextId};
@@ -569,10 +664,11 @@ function bind(){
   $('queue-pause-btn').onclick=()=>queueAction('/api/queue/pause');
   $('queue-clear-btn').onclick=()=>queueAction('/api/queue/clear');
   $('queue-stop-all-btn').onclick=()=>queueAction('/api/queue/stop');
+  const matchesBox=$('job-profile-matches'); if(matchesBox) matchesBox.onclick=async(e)=>{ const b=e.target.closest('button[data-use-job-match]'); if(!b)return; const item=state.jobProfileMatches[Number(b.dataset.useJobMatch)]; if(!item?.profile)return; applyJobProfile(item.profile,'已使用相似岗位配置','profile_store_match'); await saveCurrentJobContext(state.job); feedback(`已使用相似岗位配置：${state.job.title}`); };
   $('message-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.copy||b.dataset.fill); const v=state.messageVariants[i]; if(!v)return; if(b.dataset.copy!==undefined){ await navigator.clipboard.writeText(v.message); feedback('已复制'); } if(b.dataset.fill!==undefined) await fillMessage(v.message,v.strategy); };
   $('followup-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.followCopy||b.dataset.followFill||b.dataset.followHandled); const item=state.followups[i]; if(!item)return; if(b.dataset.followCopy!==undefined){ await navigator.clipboard.writeText(item.suggested_message); feedback('已复制'); } if(b.dataset.followFill!==undefined) await fillMessage(item.suggested_message,'followup'); if(b.dataset.followHandled!==undefined){ await track('followup_handled',{candidate_name:item.candidate_name,job_title:item.job_title||''}); b.textContent='已处理'; b.disabled=true; feedback('跟进已处理'); }};
   $('fill-reply-1-btn').onclick=()=>fillMessage($('reply-1').textContent,'chat_reply_1');
   $('fill-reply-2-btn').onclick=()=>fillMessage($('reply-2').textContent,'chat_reply_2');
 }
 
-window.addEventListener('DOMContentLoaded',async()=>{bind();await loadStoredJobIfMissing();renderJob();await checkService();await refreshContext();if(state.serviceOnline){await loadSettings();await refreshTodayStats();await refreshFollowups();}});
+window.addEventListener('DOMContentLoaded',async()=>{bind();await restoreCurrentJobContext({force:true});renderJob();await checkService();await refreshContext();if(state.serviceOnline){await loadSettings();await refreshTodayStats();await refreshFollowups();}});
