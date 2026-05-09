@@ -199,27 +199,44 @@ function renderChatContext(){
 }
 
 async function refreshContext(){
-  const ctx=await sendToContent({type:'EXTRACT_PAGE_CONTEXT'});
-  if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入'); return; }
-  state.pageContext=ctx;
-  state.job=ctx.job?.title ? ctx.job : state.job||{};
-  await loadStoredJobIfMissing();
-  state.candidate=ctx.candidate||{};
-  state.chat=ctx.chat||{};
-  state.contextId=ctx.context_id||'';
-  await saveJobIfAvailable();
-  renderContext();
-  const warnings=[];
-  if(!ctx.job?.title && ctx.warnings?.includes('未识别岗位信息')) warnings.push('未识别岗位信息，请进入岗位详情页或手动配置岗位');
-  if(!ctx.candidate?.name && ctx.warnings?.includes('未识别候选人姓名')) warnings.push('未识别候选人姓名，请打开具体候选人聊天窗口或候选人详情页');
-  if(ctx.warnings?.includes('未检测到聊天窗口')) warnings.push('未检测到聊天窗口，请先点击具体候选人对话');
-  feedback(warnings.length ? warnings.join('；') : '页面上下文已刷新');
+  feedback('正在刷新页面上下文...');
+  try{
+    const ctx=await sendToContent({type:'EXTRACT_PAGE_CONTEXT'});
+    if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入','warn'); return; }
+    state.pageContext=ctx;
+    state.job=ctx.job?.title ? ctx.job : state.job||{};
+    await loadStoredJobIfMissing();
+    state.candidate=ctx.candidate||{};
+    state.chat=ctx.chat||{};
+    state.contextId=ctx.context_id||'';
+    await saveJobIfAvailable();
+    renderContext();
+    const warnings=[];
+    const warningText=(ctx.warnings||[]).join('；');
+    if(!ctx.job?.title && /岗位/.test(warningText)) warnings.push('未识别岗位信息：请确认当前聊天窗口内有岗位卡，或在下方手动配置岗位');
+    if(!ctx.candidate?.name && /候选人姓名/.test(warningText)) warnings.push('未识别候选人姓名，请打开具体候选人聊天窗口或在线简历');
+    if(/聊天窗口|聊天主窗口/.test(warningText)) warnings.push('未检测到当前聊天主窗口，请先点击具体候选人对话');
+    feedback(warnings.length ? warnings.join('；') : '页面上下文已刷新');
+  }catch(e){
+    feedback(`刷新上下文失败：${e?.message||e}`,'warn');
+  }
 }
 
 async function refreshJob(){
-  const res=await sendToContent({type:'EXTRACT_JOB'});
-  if(res?.ok){ state.job=res.job?.title ? res.job : state.job||{}; await saveJobIfAvailable(); renderJob(); feedback(state.job?.title?'岗位信息已刷新':'未识别岗位信息，请进入岗位详情页或手动配置岗位'); }
-  else feedback(res?.error || '未能读取岗位信息');
+  feedback('正在刷新岗位信息...');
+  try{
+    const res=await sendToContent({type:'EXTRACT_JOB'});
+    if(res?.ok){
+      state.job=res.job?.title ? res.job : state.job||{};
+      await saveJobIfAvailable();
+      renderJob();
+      feedback(state.job?.title?'岗位信息已刷新':'未识别岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位');
+    } else {
+      feedback(res?.error || '未能读取岗位信息：请确认当前聊天窗口内有岗位卡，或手动配置岗位','warn');
+    }
+  }catch(e){
+    feedback(`刷新岗位失败：${e?.message||e}`,'warn');
+  }
 }
 
 function manualCandidateIfNeeded(){
@@ -267,6 +284,7 @@ async function track(event_type,payload={}){
 }
 
 async function analyzeCandidate(){
+  feedback('正在刷新/分析候选人...');
   if(!state.serviceOnline) return feedback('本地服务未启动');
   if(!state.pageContext) await refreshContext();
   if(!state.candidate?.raw_text){
@@ -306,6 +324,7 @@ async function analyzeCandidate(){
 }
 
 async function generateMessages(){
+  feedback('正在生成话术...');
   if(!state.candidate?.name || !state.job?.title || !state.priorityResult){ feedback('缺少候选人或岗位信息，请先刷新上下文/分析候选人'); return; }
   try{
     const jobCfg=jobConfigForApi();

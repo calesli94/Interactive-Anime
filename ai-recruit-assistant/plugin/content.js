@@ -16,8 +16,9 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   // parsePersonBasics("顾思琪 刚刚活跃 25岁 | 3年 | 本科") => name=顾思琪, age=25, experience_years=3, education=本科
 
   const NAV_WORDS = ["全部职位", "未读", "牛人已读未回", "批量", "职位管理", "推荐牛人", "深度搜索", "搜索", "沟通", "意向沟通", "牛人管理", "我的客服", "招聘规范", "项目外包", "直播招聘", "招聘数据", "VIP", "面试", "账号", "导航", "更多", "客服", "消息", "招聘统计", "扫码登录", "充值"];
-  const CHAT_LIST_CLASS_BLACKLIST = ["chat-user", "user-container", "user-list", "chat-top-filter", "chat-message-filter", "chat-message-filter-left", "boss-menu", "side", "sidebar", "nav", "menu", "filter", "search", "recommend", "job-list"];
-  const CHAT_LIST_TEXT_BLACKLIST = ["全部职位", "未读", "牛人已读未回", "批量", "职位管理", "推荐牛人", "深度搜索", "搜索", "沟通", "意向沟通", "牛人管理", "我的客服", "招聘规范"];
+  const CHAT_LIST_CLASS_BLACKLIST = ["chat-user", "user-container", "user-list", "chat-top-filter", "chat-message-filter", "chat-message-filter-left", "boss-menu", "sidebar", "nav", "menu", "filter", "search", "recommend", "job-list"];
+  const CHAT_LIST_LAYOUT_CLASS_BLACKLIST = ["side", "sidebar", "nav", "menu", "filter", "search", "recommend", "job-list"];
+  const CHAT_LIST_TEXT_BLACKLIST = ["全部职位", "未读", "牛人已读未回", "批量", "职位管理", "推荐牛人", "深度搜索", "搜索", "意向沟通", "牛人管理", "我的客服", "招聘规范"];
   const BAD_NAMES = ["BOSS直聘", "AI招聘助手", "职位管理", "推荐牛人", "沟通", "搜索", "当前候选人", "期望职位", "工作经历", "教育经历", "招聘规范", "我的客服", "面试", "招聘助手", "在线简历", "简历", "未识别"];
   const JOB_FORBIDDEN = [...NAV_WORDS, "道具", "意向沟通", "牛人", "人才", "聊天"];
   const JOB_AREA_SIGNALS = ["职位描述", "岗位职责", "任职要求", "技能要求", "加分项", "工作内容", "职位要求", "你将负责", "我们希望你", "工作地点", "薪资", "发布职位", "招聘中", "沟通的职位", "沟通职位", "沟通的岗位", "项目方向"];
@@ -82,15 +83,32 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
 
 
 
+  function classTokensOf(el) {
+    const raw = `${el?.className || ""} ${el?.id || ""}`.toLowerCase();
+    return raw.split(/[^a-z0-9_-]+/).filter(Boolean);
+  }
+
+  function hasClassToken(el, tokens) {
+    const classTokens = classTokensOf(el);
+    return tokens.some((token) => classTokens.some((item) => item === token || item.includes(token)));
+  }
+
+  function isLeftListGeometry(el) {
+    const rect = el?.getBoundingClientRect?.();
+    if (!rect) return false;
+    return rect.width > 0 && rect.left < 620 && rect.width < 560;
+  }
+
   function isChatListOrNavigationElement(el) {
     if (!el || !(el instanceof Element)) return false;
-    const meta = `${el.className || ""} ${el.id || ""}`.toLowerCase();
-    if (CHAT_LIST_CLASS_BLACKLIST.some((token) => meta.includes(token))) return true;
     const text = oneLine(el.innerText || el.textContent || "");
-    if (CHAT_LIST_TEXT_BLACKLIST.some((word) => text.includes(word) && text.length < 1200)) return true;
     const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.width < 420 && rect.left < 560 && /(已读|送达|未读|沟通的职位|沟通职位)/.test(text)) return true;
-    if (el.closest?.(".chat-user, .user-container, .user-list, .chat-top-filter, .chat-message-filter, .chat-message-filter-left, .boss-menu, .sidebar, .side, .nav, .menu, .filter, .search, .recommend, .job-list")) return true;
+    if (hasClassToken(el, ["chat-user", "user-container", "user-list", "chat-top-filter", "chat-message-filter", "chat-message-filter-left", "boss-menu"])) return true;
+    if (isLeftListGeometry(el) && hasClassToken(el, CHAT_LIST_LAYOUT_CLASS_BLACKLIST)) return true;
+    if (isLeftListGeometry(el) && CHAT_LIST_TEXT_BLACKLIST.some((word) => text.includes(word) && text.length < 1200)) return true;
+    if (isLeftListGeometry(el) && /(已读|送达|未读|沟通的职位|沟通职位)/.test(text)) return true;
+    if (rect.left < 620 && el.closest?.(".chat-user, .user-container, .user-list, .chat-top-filter, .chat-message-filter, .chat-message-filter-left, .boss-menu")) return true;
+    if (rect.left < 620 && el.closest?.(".sidebar, .side, .nav, .menu, .filter, .search, .recommend, .job-list")) return true;
     return false;
   }
 
@@ -115,16 +133,40 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return { score, reason: reasons.join("；") || "未命中当前聊天主窗口特征" };
   }
 
+  function activeChatPanelAnchorNodes() {
+    const anchors = [];
+    for (const node of queryVisible([
+      ".message-item", ".item-friend", ".item-myself", ".base-info-single-top", ".base-info-single-top-detail",
+      ".experience-content", ".position-item.expect", ".resume-btn-content", ".chat-message-list", ".message-list",
+      "[class*='message-item']", "[class*='base-info-single']", "[class*='experience-content']", "[class*='position-item']",
+      "textarea", "[contenteditable='true']", "[role='textbox']",
+    ])) {
+      const rect = node.getBoundingClientRect();
+      if (rect.left > 620 && rect.width > 80 && !isChatListOrNavigationElement(node) && !anchors.includes(node)) anchors.push(node);
+    }
+    return anchors;
+  }
+
+  function addPanelCandidateFromNode(node, out) {
+    let current = node;
+    for (let depth = 0; current && current instanceof Element && depth < 8; depth += 1, current = current.parentElement) {
+      if (out.includes(current) || isExtensionDom(current) || isChatListOrNavigationElement(current)) continue;
+      const rect = current.getBoundingClientRect();
+      if (rect.width >= 400 && rect.height >= 120 && rect.left > 560) out.push(current);
+    }
+  }
+
   function activeChatPanelCandidates() {
-    const nodes = queryVisible([".chat-main", ".chat-panel", ".chat-container", ".conversation-main", ".message-container", ".im-chat", "[class*='chat-main']", "[class*='conversation']", "[class*='message-container']", "main", "section", "div"])
-      .filter((node) => {
-        const rect = node.getBoundingClientRect();
-        return rect.width > 400 && rect.height > 220 && !isChatListOrNavigationElement(node) && !isExtensionDom(node);
-      })
+    const nodes = [];
+    for (const anchor of activeChatPanelAnchorNodes()) addPanelCandidateFromNode(anchor, nodes);
+    for (const node of queryVisible([".chat-main", ".chat-panel", ".chat-container", ".conversation-main", ".message-container", ".im-chat", "[class*='chat-main']", "[class*='conversation']", "[class*='message-container']", "main", "section", "div"])) {
+      const rect = node.getBoundingClientRect();
+      if (rect.width >= 400 && rect.height >= 120 && rect.left > 560 && !nodes.includes(node) && !isChatListOrNavigationElement(node) && !isExtensionDom(node)) nodes.push(node);
+    }
+    return nodes
       .map((node) => ({ node, ...activeChatPanelScore(node) }))
       .filter((item) => item.score >= 45)
-      .sort((a, b) => b.score - a.score || b.node.getBoundingClientRect().left - a.node.getBoundingClientRect().left);
-    return nodes;
+      .sort((a, b) => b.score - a.score || (b.node.getBoundingClientRect().height * b.node.getBoundingClientRect().width) - (a.node.getBoundingClientRect().height * a.node.getBoundingClientRect().width));
   }
 
   function findActiveChatMainPanel() {
@@ -368,8 +410,8 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   }
 
   function expectedParts(text) {
-    const line = linesOf(text).find((item) => item.includes("期望职位")) || "";
-    const normalized = line.replace(/^期望职位[:：\s]*/, "").replace(/期望职位/g, " ");
+    const line = linesOf(text).find((item) => /期望职位|期望[:：]/.test(item)) || "";
+    const normalized = line.replace(/^(期望职位|期望)[:：\s]*/, "").replace(/期望职位|期望[:：]?/g, " ");
     const parts = normalized.split(/[|/｜·,，\s]+/).map(oneLine).filter(Boolean);
     const expected_city = parts.find((item) => CITY_RE.test(item)) || "";
     const salary_expectation = parts.find((item) => /\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]/.test(item)) || "";
@@ -414,8 +456,8 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     const reasons = [];
     if (parseNameFromText(text)) { score += 15; reasons.push("包含姓名"); }
     if (/\d{2}岁|\d+年|本科|大专|硕士|博士/.test(text)) { score += 15; reasons.push("包含基础信息"); }
-    if (text.includes("期望职位")) { score += 25; reasons.push("包含期望职位"); }
-    if (text.includes("工作经历")) { score += 25; reasons.push("包含工作经历"); }
+    if (/期望职位|期望[:：]/.test(text)) { score += 25; reasons.push("包含期望职位/期望方向"); }
+    if (text.includes("工作经历") || /\d{4}[.-]\d{2}/.test(text) || /experience-content/.test(`${node.className || ""}`)) { score += 25; reasons.push("包含工作经历"); }
     if (/技能标签|技能/.test(text)) { score += 10; reasons.push("包含技能"); }
     return { score, reason: reasons.join("；") || "未命中资料区特征" };
   }
@@ -479,13 +521,13 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return nodes.sort((a, b) => b.score - a.score || textOf(a.node).length - textOf(b.node).length);
   }
 
-  function sourceCandidateFromNode(item, source) {
-    const raw = textOf(item.node);
+  function sourceCandidateFromRaw(rawText, source) {
+    const raw = cleanText(rawText);
     const basics = parsePersonBasics(raw);
     const expected = expectedParts(raw);
     const skills = safeKeywords(raw, SKILL_WORDS);
     const projectKeywords = safeKeywords(raw, PROJECT_WORDS);
-    const currentTitle = expected.expected_position || (raw.match(/(?:当前职位|在职职位|求职意向|职位)[:：\s]*([^\n。；;|]{2,40})/) || ["", ""])[1] || "";
+    const currentTitle = expected.expected_position || (raw.match(/(?:当前职位|在职职位|求职意向|职位|期望)[:：\s]*([^\n。；;|]{2,40})/) || ["", ""])[1] || "";
     return {
       ...emptyCandidate(source),
       ...basics,
@@ -494,15 +536,37 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       city: expected.expected_city || (raw.match(CITY_RE) || [""])[0],
       expected_position: expected.expected_position,
       expected_city: expected.expected_city,
-      salary_expectation: expected.salary_expectation || (raw.match(/\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]\s*[-~]\s*\d+\s*[kK]|\d+\s*万\s*[-~]\s*\d+\s*万/) || [""])[0],
+      salary_expectation: expected.salary_expectation || (raw.match(/\d+\s*[-~]\s*\d+\s*[kK]|\d+\s*[kK]\s*[-~]\s*\d+\s*[kK]|\d+\s*万\s*[-~]\s*\d+\s*万|面议/) || [""])[0],
       skills: source === "selected_chat_item" ? [] : skills,
       project_keywords: source === "selected_chat_item" ? [] : projectKeywords,
-      work_experiences: source === "selected_chat_item" ? [] : (raw.match(/工作经历[^]*?(?=项目经历|教育经历|技能标签|技能|$)/)?.[0] || "").split(/(?=\d{4}|\d+年|公司|项目)/).map(oneLine).filter((line) => line.length > 8).slice(0, 8),
+      work_experiences: source === "selected_chat_item" ? [] : raw.split(/(?=\d{4}[.-]|\d+年|公司|项目|工作经历)/).map(oneLine).filter((line) => line.length > 8 && !/^\d{2}-\d{2}\s+\d{1,2}:\d{2}$/.test(line)).slice(0, 8),
       raw_text: source === "selected_chat_item" ? "" : raw.slice(0, 5000),
       source,
       sources_used: [source],
-      warnings: source === "selected_chat_item" ? ["仅从左侧会话列表识别到姓名，建议打开在线简历"] : (source === "resume_modal" || source === "profile_panel" ? [] : ["当前候选人信息不完整，请打开在线简历后再分析"]),
+      warnings: source === "selected_chat_item" ? ["仅从左侧会话列表识别到姓名，建议打开在线简历"] : (source === "resume_modal" || source === "profile_panel" || source === "active_chat_profile" ? [] : ["当前候选人信息不完整，请打开在线简历后再分析"]),
     };
+  }
+
+  function sourceCandidateFromNode(item, source) {
+    return sourceCandidateFromRaw(textOf(item.node), source);
+  }
+
+  function activeChatProfileCandidate() {
+    const root = findActiveChatMainPanel() || document;
+    const accepted = [];
+    for (const node of queryVisible([".base-info-single-top", ".base-info-single-top-detail", ".base-info-single-detial", ".experience-content", ".position-item.expect", ".resume-btn-content", "[class*='base-info-single']", "[class*='experience-content']", "[class*='position-item']"], root)) {
+      const text = textOf(node);
+      const cls = String(node.className || "");
+      if (!text || /message|chat-user|user-list|message-time/.test(cls) || isChatListOrNavigationElement(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.left < 620) continue;
+      accepted.push(text);
+    }
+    const raw = uniq(accepted).join("\n");
+    if (!raw || !parseNameFromText(raw)) return null;
+    const candidate = sourceCandidateFromRaw(raw, "active_chat_profile");
+    candidate.profile_complete = Boolean(candidate.name && (candidate.age || candidate.experience_years || candidate.education));
+    return candidate;
   }
 
   function visibleTextFallback() {
@@ -545,25 +609,29 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   }
 
   function extractCandidate() {
-    const debug = { resume_modal_candidates: [], profile_panel_candidates: [], chat_header_candidates: [], selected_chat_item_candidates: [] };
+    const debug = { resume_modal_candidates: [], profile_panel_candidates: [], chat_header_candidates: [], selected_chat_item_candidates: [], active_chat_profile_candidate: null };
     try {
       const resumeItems = resumeModalCandidates();
       const profileItems = profilePanelCandidates();
       const headerItems = chatHeaderCandidates();
       const selectedItems = selectedChatItemCandidates();
+      const activeProfile = activeChatProfileCandidate();
       debug.resume_modal_candidates = resumeItems.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason));
       debug.profile_panel_candidates = profileItems.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason));
       debug.chat_header_candidates = headerItems.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason));
       debug.selected_chat_item_candidates = selectedItems.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason));
+      debug.active_chat_profile_candidate = activeProfile ? { source: activeProfile.source, name: activeProfile.name, raw_text_preview: activeProfile.raw_text.slice(0, 240) } : null;
 
       const sources = [];
       if (resumeItems[0]) sources.push(sourceCandidateFromNode(resumeItems[0], "resume_modal"));
       if (profileItems[0]) sources.push(sourceCandidateFromNode(profileItems[0], "profile_panel"));
       if (headerItems[0]) sources.push(sourceCandidateFromNode(headerItems[0], "chat_header"));
+      if (activeProfile) sources.push(activeProfile);
       if (selectedItems[0]) sources.push(sourceCandidateFromNode(selectedItems[0], "selected_chat_item"));
 
       const primary = sources.find((item) => item.name && item.source === "resume_modal")
         || sources.find((item) => item.name && item.source === "profile_panel")
+        || sources.find((item) => item.name && item.source === "active_chat_profile")
         || sources.find((item) => item.name && item.source === "chat_header")
         || sources.find((item) => item.name && item.source === "selected_chat_item");
       const fallback = visibleTextFallback();
