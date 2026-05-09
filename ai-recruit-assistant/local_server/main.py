@@ -453,10 +453,9 @@ def _strict_art_score(candidate: dict, job_config: dict) -> dict:
 
 ROLE_TYPE_LABELS = {
     "recruitment": "招聘/猎头",
-    "technical_artist": "技术美术/TA",
+    "technical_art": "技术美术/TA",
     "ai_video": "AI视频",
-    "artist": "美术/原画",
-    "video_creator": "视频/动画",
+    "art": "美术/原画",
     "unknown": "未知岗位",
 }
 
@@ -502,7 +501,17 @@ def _llm_match_analyze_placeholder(payload: dict) -> dict | None:
     return None
 
 
-def parse_job_intelligence(job_config: dict) -> dict:
+def _word_hits(text: str, words: list[str]) -> list[str]:
+    return [word for word in words if _contains_any(text, [word])]
+
+
+def parse_job_profile(job_config: dict) -> dict:
+    """Parse a job into a semantic role profile using rules only.
+
+    Recruitment roles are detected before art/TA/AIGC keywords so phrases like
+    “招聘TA / 招聘美术负责人 / 招聘AIGC专家” describe recruiting targets rather
+    than the candidate's own required production skill set.
+    """
     llm_result = _llm_job_parse_placeholder(job_config)
     if llm_result:
         return llm_result
@@ -515,7 +524,15 @@ def parse_job_intelligence(job_config: dict) -> dict:
         job_config.get("requirements"),
         job_config.get("preferred_keywords"),
         job_config.get("required_skills"),
+        job_config.get("raw_text"),
     )
+    title_text = title or text
+    keywords = _keywords_to_list(job_config.get("preferred_keywords") or [])
+
+    recruitment_words = ["高招HR", "高招", "招聘", "猎头", "recruit", "HR", "HRBP", "人力资源", "人才资源", "人才地图", "mapping", "Mapping", "访寻", "寻访", "招聘交付", "候选人沟通"]
+    ta_words = ["技术美术", "TA", "Shader", "Unity", "UE", "Unreal", "虚幻", "工具链", "材质", "渲染"]
+    ai_video_words = ["AI视频", "ComfyUI", "Stable Diffusion", "SD", "可灵", "即梦", "剪辑", "镜头语言", "镜头", "分镜", "短视频"]
+    artist_words = ["原画", "角色", "角色设计", "角色原画", "角色美宣", "美宣", "场景", "3D", "道具", "游戏美术"]
 
     role_type = "unknown"
     role_summary = f"负责{title or '当前岗位'}相关工作"
@@ -523,59 +540,63 @@ def parse_job_intelligence(job_config: dict) -> dict:
     must_have: list[str] = []
     nice_to_have: list[str] = []
     anti_patterns: list[str] = []
-    keywords = _keywords_to_list(job_config.get("preferred_keywords") or [])
+    target_profile = ""
 
-    recruitment_words = ["高招HR", "招聘", "猎头", "recruit", "HRBP", "人才", "mapping", "访寻", "寻访", "招聘交付"]
-    ta_words = ["技术美术", "TA", "Shader", "Unity", "UE", "Unreal", "虚幻", "工具链", "材质", "渲染"]
-    ai_video_words = ["AI视频", "ComfyUI", "Stable Diffusion", "可灵", "即梦", "剪辑", "镜头", "分镜", "短视频"]
-    artist_words = ["原画", "角色设计", "角色美宣", "美宣", "场景", "道具", "游戏美术"]
-
-    if _contains_any(text, recruitment_words):
+    if _contains_any(title_text, recruitment_words) or _contains_any(text, ["高端招聘", "人才地图", "招聘交付", "猎头", "HRBP", "人力资源"]):
         role_type = "recruitment"
-        role_summary = "负责游戏行业高端人才招聘、行业mapping、候选人沟通与复杂岗位交付"
-        core_competencies = ["高端招聘", "行业mapping", "候选人沟通", "复杂岗位交付", "游戏行业人才资源"]
-        must_have = ["游戏行业招聘经验", "高端岗位招聘经验", "猎头或资深招聘经验"]
-        nice_to_have = ["TA/AIGC/美术负责人招聘经验", "高端候选人资源", "跨部门岗位交付经验"]
-        anti_patterns = ["纯技术岗位候选人", "无招聘经验", "无游戏行业经验"]
-        keywords = _dedupe_keep_order(keywords + ["招聘", "猎头", "高端招聘", "mapping", "HRBP", "人才资源"])
+        role_summary = "负责游戏行业高端岗位招聘、人才地图/Mapping、候选人沟通和复杂岗位交付"
+        core_competencies = ["招聘经验", "游戏行业经验", "高端岗位交付", "人才地图/Mapping", "候选人沟通", "人才资源覆盖"]
+        must_have = ["招聘/猎头/HR经验", "游戏行业或泛娱乐行业招聘经验", "高端岗位交付经验", "人才地图/Mapping能力"]
+        nice_to_have = ["TA/AIGC/美术负责人等岗位招聘经验", "头部游戏公司或猎头资源", "复杂岗位跨部门推进经验"]
+        anti_patterns = ["纯技术美术/TA背景", "纯原画/美术背景", "纯工程开发背景", "无招聘交付经验"]
+        target_profile = "有游戏行业招聘或猎头经验，做过高端岗位交付、人才地图和候选人沟通的人。"
+        keywords = _dedupe_keep_order(keywords + ["招聘", "猎头", "高招", "高端招聘", "人才地图", "Mapping", "候选人沟通", "人才资源", "游戏行业"])
     elif _contains_any(text, ai_video_words):
         role_type = "ai_video"
-        role_summary = "负责游戏方向AI视频内容制作、分镜设计、镜头节奏和生成工具流程"
-        core_competencies = ["AI视频制作", "分镜设计", "镜头语言", "剪辑节奏", "AI生成工具流程"]
-        must_have = ["AI视频制作经验", "ComfyUI或Stable Diffusion经验", "分镜/剪辑/镜头语言经验"]
+        role_summary = "负责AI视频内容制作、分镜设计、镜头语言、剪辑节奏和AI生成工具流程"
+        core_competencies = ["AI视频制作", "分镜设计", "镜头语言", "剪辑节奏", "ComfyUI/Stable Diffusion流程"]
+        must_have = ["AI视频制作经验", "分镜/剪辑/镜头语言经验", "ComfyUI或Stable Diffusion经验"]
         nice_to_have = ["游戏美术或动画经验", "可灵/即梦等视频生成工具经验", "角色演出经验"]
-        anti_patterns = ["无视频或动画经验", "无AI生成工具经验", "纯招聘/行政背景"]
+        anti_patterns = ["纯招聘/HR背景", "无视频或动画经验", "无AI生成工具经验"]
+        target_profile = "做过AI视频、分镜剪辑或生成式影像流程，能把控镜头节奏和成片质量的人。"
         keywords = _dedupe_keep_order(keywords + ["AI视频", "ComfyUI", "Stable Diffusion", "分镜", "镜头语言", "剪辑", "动画"])
     elif _contains_any(text, ta_words):
-        role_type = "technical_artist"
+        role_type = "technical_art"
         role_summary = "负责技术美术、引擎表现、Shader材质或美术工具链相关工作"
-        core_competencies = ["技术美术", "引擎经验", "Shader/材质", "工具链", "美术管线协作"]
-        must_have = ["Unity/UE经验", "Shader或材质经验", "TA或工具链经验"]
+        core_competencies = ["技术美术/TA", "Unity/UE引擎经验", "Shader/材质", "工具链", "美术管线协作"]
+        must_have = ["Unity/UE引擎经验", "Shader或材质经验", "TA或工具链经验"]
         nice_to_have = ["性能优化经验", "Houdini/特效经验", "跨美术和程序协作经验"]
-        anti_patterns = ["纯HR候选人", "无引擎或技术美术经验", "纯平面设计经历"]
+        anti_patterns = ["纯招聘/HR背景", "无引擎或技术美术经验", "纯平面或纯原画经历"]
+        target_profile = "有TA、Shader、引擎或美术工具链经验，能连接美术和程序流程的人。"
         keywords = _dedupe_keep_order(keywords + ["技术美术", "TA", "Unity", "UE", "Shader", "工具链"])
     elif _contains_any(text, artist_words):
-        role_type = "artist"
+        role_type = "art"
         role_summary = "负责游戏美术、角色/场景/美宣等视觉设计工作"
         core_competencies = ["游戏美术", "角色/场景设计", "美宣表现", "绘画基础", "项目风格适配"]
         must_have = ["游戏美术项目经验", "角色/场景/原画能力", "PS/SAI/CSP等绘画工具"]
         nice_to_have = ["二次元/写实等风格经验", "商业化项目经验", "美宣经验"]
-        anti_patterns = ["纯HR候选人", "无美术作品经验", "纯技术开发背景"]
+        anti_patterns = ["纯招聘/HR背景", "无美术作品经验", "纯技术开发背景"]
+        target_profile = "有游戏美术项目经历和作品积累，能承担角色、场景或美宣视觉设计的人。"
         keywords = _dedupe_keep_order(keywords + ["原画", "角色设计", "游戏美术", "美宣", "Photoshop"])
 
     return {
         "role_type": role_type,
         "role_summary": role_summary,
-        "core_competencies": core_competencies,
-        "must_have": must_have,
-        "nice_to_have": nice_to_have,
-        "anti_patterns": anti_patterns,
-        "keywords": keywords,
+        "core_competencies": _dedupe_keep_order(core_competencies),
+        "must_have": _dedupe_keep_order(must_have),
+        "nice_to_have": _dedupe_keep_order(nice_to_have),
+        "anti_patterns": _dedupe_keep_order(anti_patterns),
+        "target_profile": target_profile,
+        "keywords": _dedupe_keep_order(keywords),
         "llm_provider": "rules",
     }
 
 
-def parse_candidate_intelligence(candidate: dict) -> dict:
+def parse_job_intelligence(job_config: dict) -> dict:
+    return parse_job_profile(job_config)
+
+
+def parse_candidate_profile(candidate: dict) -> dict:
     llm_result = _llm_candidate_parse_placeholder(candidate)
     if llm_result:
         return llm_result
@@ -588,42 +609,58 @@ def parse_candidate_intelligence(candidate: dict) -> dict:
     likely_fit_roles: list[str] = []
     unlikely_fit_roles: list[str] = []
 
-    recruiter_words = ["招聘", "猎头", "HR", "HRBP", "人力资源", "人才", "寻访", "mapping", "面试", "offer", "招聘交付"]
+    recruiter_words = ["招聘", "高招", "猎头", "HR", "HRBP", "人力资源", "人才资源", "人才地图", "Mapping", "mapping", "寻访", "访寻", "候选人", "面试", "offer", "招聘交付", "高端战略招聘"]
     ta_words = ["技术美术", "TA", "Shader", "Unity", "UE", "Unreal", "虚幻", "工具链", "材质", "渲染"]
-    ai_video_words = ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头", "分镜", "动画", "AE", "短视频", "可灵", "即梦"]
-    artist_words = ["原画", "角色设计", "角色原画", "美宣", "游戏美术", "场景", "道具", "Photoshop", "SAI", "CSP"]
+    ai_video_words = ["AI视频", "ComfyUI", "Stable Diffusion", "SD", "剪辑", "镜头语言", "镜头", "分镜", "动画", "AE", "短视频", "可灵", "即梦"]
+    artist_words = ["原画", "角色设计", "角色原画", "美宣", "游戏美术", "场景", "3D", "道具", "Photoshop", "SAI", "CSP"]
+    engineer_words = ["后端", "前端", "客户端", "服务端", "Java", "Python", "C++", "Go", "程序", "开发工程师"]
 
-    if _contains_any(text, recruiter_words) and not _contains_any(text, ta_words + artist_words + ai_video_words):
+    recruiter_hits = _word_hits(text, recruiter_words)
+    ta_hits = _word_hits(text, ta_words)
+    ai_hits = _word_hits(text, ai_video_words)
+    artist_hits = _word_hits(text, artist_words)
+    engineer_hits = _word_hits(text, engineer_words)
+
+    # Recruitment evidence wins when explicit recruiting delivery terms exist;
+    # this prevents “招聘TA/AIGC专家” target terms from turning a recruiter into a TA.
+    if recruiter_hits and _contains_any(text, ["招聘", "高招", "猎头", "HRBP", "人力资源", "人才地图", "Mapping", "mapping", "招聘交付", "高端战略招聘"]):
         persona_type = "recruiter"
-    elif _contains_any(text, recruiter_words) and _contains_any(text, ["招聘", "猎头", "HRBP", "人力资源", "mapping"]):
-        persona_type = "recruiter"
-    elif _contains_any(text, ta_words):
+    elif ta_hits:
         persona_type = "technical_artist"
-    elif _contains_any(text, ai_video_words):
-        persona_type = "video_creator"
-    elif _contains_any(text, artist_words):
+    elif ai_hits:
+        persona_type = "ai_video_creator"
+    elif artist_hits:
         persona_type = "artist"
+    elif engineer_hits:
+        persona_type = "engineer"
 
     if persona_type == "recruiter":
-        core_strengths = ["招聘沟通", "候选人筛选", "岗位交付"]
+        core_strengths = ["招聘经验", "高端岗位交付", "人才地图/Mapping", "候选人沟通", "游戏行业资源"]
         likely_fit_roles = ["recruitment"]
-        unlikely_fit_roles = ["technical_artist", "ai_video", "artist"]
-        evidence = [word for word in recruiter_words if _contains_any(text, [word])][:6]
+        unlikely_fit_roles = ["technical_art", "art", "ai_video"]
+        evidence = recruiter_hits[:8]
+        if not _contains_any(text, ["游戏", "网易", "趣加", "三七互娱", "FunPlus"]):
+            risk_points.append("未明确看到游戏行业招聘经历")
     elif persona_type == "technical_artist":
-        core_strengths = ["技术美术", "引擎/Shader", "美术技术协作"]
-        likely_fit_roles = ["technical_artist"]
+        core_strengths = ["技术美术/TA", "引擎或Shader", "美术工具链", "技术与美术协作"]
+        likely_fit_roles = ["technical_art"]
+        unlikely_fit_roles = ["recruitment", "art"]
+        evidence = ta_hits[:8]
+    elif persona_type == "ai_video_creator":
+        core_strengths = ["AI视频制作", "分镜/镜头语言", "剪辑节奏", "AI生成工具"]
+        likely_fit_roles = ["ai_video"]
         unlikely_fit_roles = ["recruitment"]
-        evidence = [word for word in ta_words if _contains_any(text, [word])][:6]
-    elif persona_type == "video_creator":
-        core_strengths = ["视频/动画制作", "分镜/镜头", "AI或剪辑工具"]
-        likely_fit_roles = ["ai_video", "video_creator"]
-        unlikely_fit_roles = ["recruitment"]
-        evidence = [word for word in ai_video_words if _contains_any(text, [word])][:6]
+        evidence = ai_hits[:8]
     elif persona_type == "artist":
-        core_strengths = ["美术设计", "绘画/角色表现", "游戏美术项目"]
-        likely_fit_roles = ["artist"]
-        unlikely_fit_roles = ["recruitment"]
-        evidence = [word for word in artist_words if _contains_any(text, [word])][:6]
+        core_strengths = ["游戏美术", "角色/场景/美宣", "视觉设计", "绘画工具"]
+        likely_fit_roles = ["art"]
+        unlikely_fit_roles = ["recruitment", "technical_art"]
+        evidence = artist_hits[:8]
+    elif persona_type == "engineer":
+        core_strengths = ["工程开发", "程序实现"]
+        likely_fit_roles = ["engineering"]
+        unlikely_fit_roles = ["recruitment", "art", "ai_video"]
+        evidence = engineer_hits[:8]
     else:
         risk_points.append("候选人语义画像不清晰，需要补充简历或经历信息")
 
@@ -632,7 +669,7 @@ def parse_candidate_intelligence(candidate: dict) -> dict:
         years = int(years)
     if isinstance(years, (int, float)):
         seniority = "senior" if years >= 5 else ("mid" if years >= 2 else "junior")
-    elif _contains_any(text, ["高级", "专家", "负责人", "leader", "主美", "资深"]):
+    elif _contains_any(text, ["高级", "专家", "负责人", "leader", "主美", "资深", "10年以上"]):
         seniority = "senior"
     elif _contains_any(text, ["1年", "应届", "实习"]):
         seniority = "junior"
@@ -640,17 +677,19 @@ def parse_candidate_intelligence(candidate: dict) -> dict:
         seniority = "unknown"
 
     career_summary = {
-        "recruiter": "候选人主要背景偏招聘/猎头/HR岗位交付",
-        "technical_artist": "候选人主要背景偏技术美术、引擎表现或工具链",
-        "video_creator": "候选人主要背景偏视频、动画、分镜或AI内容制作",
-        "artist": "候选人主要背景偏游戏美术、原画或视觉设计",
-        "unknown": "候选人经历信息不足，暂无法判断主要方向",
+        "recruiter": "主要背景偏招聘/猎头/HR岗位交付，重点看高端招聘、人才地图和候选人沟通经验",
+        "technical_artist": "主要背景偏技术美术、引擎表现、Shader或工具链",
+        "ai_video_creator": "主要背景偏AI视频、分镜、剪辑或生成式影像制作",
+        "artist": "主要背景偏游戏美术、原画或视觉设计",
+        "engineer": "主要背景偏工程开发或程序实现",
+        "unknown": "经历信息不足，暂无法判断主要方向",
     }[persona_type]
 
     return {
         "persona_type": persona_type,
         "career_summary": career_summary,
         "core_strengths": _dedupe_keep_order(core_strengths),
+        "evidence": _dedupe_keep_order(evidence),
         "experience_evidence": _dedupe_keep_order(evidence),
         "risk_points": _dedupe_keep_order(risk_points),
         "seniority": seniority,
@@ -660,11 +699,41 @@ def parse_candidate_intelligence(candidate: dict) -> dict:
     }
 
 
+def parse_candidate_intelligence(candidate: dict) -> dict:
+    return parse_candidate_profile(candidate)
+
+
 def _level_from_semantic_score(score: int) -> str:
     return _level_from_score(score)
 
 
-def analyze_match_intelligence(job_profile: dict, candidate_profile: dict, candidate: dict | None = None, job_config: dict | None = None) -> dict:
+def _requirement_matched(text: str, requirement: str) -> bool:
+    req = str(requirement or "")
+    groups = {
+        "招聘": ["招聘", "高招", "猎头", "HR", "HRBP", "人力资源", "招聘交付"],
+        "游戏": ["游戏", "网易", "趣加", "三七互娱", "FunPlus", "互娱"],
+        "高端": ["高端", "高招", "专家", "负责人", "总监", "战略招聘"],
+        "人才地图": ["人才地图", "Mapping", "mapping", "map", "寻访", "访寻"],
+        "候选人沟通": ["候选人", "沟通", "面试", "offer", "邀约"],
+        "AI视频": ["AI视频", "视频", "分镜", "剪辑", "镜头", "ComfyUI", "Stable Diffusion"],
+        "技术美术": ["技术美术", "TA", "Shader", "Unity", "UE", "Unreal", "工具链", "材质"],
+        "游戏美术": ["原画", "角色", "场景", "美宣", "3D", "游戏美术", "Photoshop", "SAI", "CSP"],
+    }
+    for key, words in groups.items():
+        if key in req and _contains_any(text, words):
+            return True
+    words = [word for word in re.split(r"[/、,，或和\s]+", req) if len(word) >= 2]
+    return any(_contains_any(text, [word]) for word in words)
+
+
+def _cap_match_for_reliability(score: int, level: str, reliability: str) -> tuple[int, str]:
+    if reliability == "low" and score > 60:
+        score = 60
+        level = _cap_level(level, "B")
+    return score, level
+
+
+def semantic_match(job_profile: dict, candidate_profile: dict, candidate: dict, job_config: dict) -> dict:
     payload = {"job_profile": job_profile, "candidate_profile": candidate_profile, "candidate": candidate or {}, "job_config": job_config or {}}
     llm_result = _llm_match_analyze_placeholder(payload)
     if llm_result:
@@ -673,91 +742,123 @@ def analyze_match_intelligence(job_profile: dict, candidate_profile: dict, candi
     role_type = job_profile.get("role_type") or "unknown"
     persona_type = candidate_profile.get("persona_type") or "unknown"
     c_text = _candidate_text(candidate or {})
+    jd_complete = bool((job_config or {}).get("jd_complete") or (job_config or {}).get("description") or (job_config or {}).get("requirements") or (job_config or {}).get("responsibilities"))
+    candidate_complete = bool((candidate or {}).get("profile_complete", True))
+    reliability = "high" if jd_complete and candidate_complete and role_type != "unknown" and persona_type != "unknown" else ("medium" if role_type != "unknown" and persona_type != "unknown" else "low")
+    if not jd_complete or not candidate_complete:
+        reliability = "low"
+
     matched_points: list[str] = []
     missing_points: list[str] = []
-    risk_points: list[str] = []
+    risk_points: list[str] = list(candidate_profile.get("risk_points") or [])
 
     for competency in job_profile.get("core_competencies") or []:
-        words = re.split(r"[/、,，\s]+", str(competency))
-        if any(_contains_any(c_text, [word]) for word in words if word):
-            matched_points.append(f"匹配：经历中体现{competency}")
+        if _requirement_matched(c_text, competency):
+            matched_points.append(f"匹配：{competency}")
+    for must in job_profile.get("must_have") or []:
+        if _requirement_matched(c_text, must):
+            matched_points.append(f"匹配：{must}")
+        else:
+            missing_points.append(f"缺失：{must}")
     for keyword in job_profile.get("keywords") or []:
         if _contains_any(c_text, [str(keyword)]):
-            matched_points.append(f"匹配：经历中出现{keyword}")
-    for must in job_profile.get("must_have") or []:
-        words = re.split(r"[/、,，或和\s]+", str(must))
-        if not any(_contains_any(c_text, [word]) for word in words if len(word) >= 2):
-            missing_points.append(f"缺失：未明确看到{must}")
+            matched_points.append(f"匹配：{keyword}")
 
-    # Hard semantic gates.
+    matched_points = _dedupe_keep_order(matched_points)
+    missing_points = _dedupe_keep_order(missing_points)
+
+    # Hard semantic gates prevent keyword-only false positives.
     if role_type == "recruitment" and persona_type != "recruiter":
-        score = 35 if matched_points else 25
-        risk_points.append(f"风险：岗位是招聘/高招方向，但候选人画像是{persona_type}，不是招聘/猎头背景")
-        missing_points.append("缺失：未看到招聘、猎头、HRBP或人才mapping经验")
+        risk_points.append(f"岗位是招聘/高招方向，但对方画像是{persona_type}，不是招聘/猎头背景")
+        if persona_type in {"technical_artist", "artist", "ai_video_creator", "engineer"}:
+            missing_points.append("缺失：招聘、猎头、HRBP或人才地图/Mapping经验")
+        score = 30 if persona_type in {"technical_artist", "artist", "engineer"} else 38
+        level = _level_from_semantic_score(score)
         return {
-            "score": min(score, 40),
-            "level": _level_from_semantic_score(min(score, 40)),
-            "fit_result": "not_fit",
-            "message_intent": "reject" if score <= 30 else "observe",
-            "matched_points": _dedupe_keep_order(matched_points),
+            "score": score,
+            "level": level,
+            "fit_result": "not_fit" if score <= 35 else "weak_fit",
+            "message_intent": "reject" if score <= 35 else "observe",
+            "matched_points": matched_points,
             "missing_points": _dedupe_keep_order(missing_points),
-            "risk_points": _dedupe_keep_order(risk_points + (candidate_profile.get("risk_points") or [])),
-            "decision_summary": "高招HR/招聘岗位优先匹配招聘、猎头或HRBP候选人；当前候选人不是招聘画像，不建议推进。",
-            "recommended_action": "不建议按高招HR岗位推进，可记录为不匹配或转入其他合适岗位",
-            "reliability": "high",
+            "risk_points": _dedupe_keep_order(risk_points),
+            "decision_summary": "高招HR/招聘岗位的本质是招聘交付，不按TA/美术/AIGC生产技能做高分；当前画像不是招聘背景，不建议强推。",
+            "recommended_action": "礼貌暂不推进该岗位，可保留到更匹配的技术/美术岗位",
+            "reliability": reliability,
         }
 
-    if role_type == "technical_artist" and persona_type == "recruiter":
-        risk_points.append("风险：岗位是技术美术TA，但候选人是招聘/HR画像")
-        missing_points.append("缺失：未看到TA、引擎、Shader或工具链经验")
+    if role_type in {"technical_art", "art"} and persona_type == "recruiter":
+        needed = "TA、引擎、Shader或工具链经验" if role_type == "technical_art" else "原画、角色/场景或美宣作品经验"
+        risk_points.append(f"岗位是{ROLE_TYPE_LABELS.get(role_type)}，但对方是招聘/HR画像")
+        missing_points.append(f"缺失：{needed}")
+        score = 25 if role_type == "technical_art" else 28
         return {
-            "score": 25,
+            "score": score,
             "level": "D",
             "fit_result": "not_fit",
             "message_intent": "reject",
             "matched_points": [],
             "missing_points": _dedupe_keep_order(missing_points),
             "risk_points": _dedupe_keep_order(risk_points),
-            "decision_summary": "技术美术TA岗位需要技术美术/引擎/Shader经验，纯HR画像不匹配。",
+            "decision_summary": f"{ROLE_TYPE_LABELS.get(role_type)}岗位需要对应生产经验，纯招聘画像不匹配。",
             "recommended_action": "不建议推进该岗位",
-            "reliability": "high",
+            "reliability": reliability,
         }
 
-    persona_match = role_type in (candidate_profile.get("likely_fit_roles") or []) or (
-        role_type == "ai_video" and persona_type == "video_creator"
-    ) or (role_type == "artist" and persona_type == "artist") or (role_type == "technical_artist" and persona_type == "technical_artist")
+    persona_match = role_type in (candidate_profile.get("likely_fit_roles") or [])
+    if role_type == "ai_video" and persona_type == "ai_video_creator":
+        persona_match = True
+    if role_type == "technical_art" and persona_type == "technical_artist":
+        persona_match = True
+    if role_type == "art" and persona_type == "artist":
+        persona_match = True
 
     if role_type in (candidate_profile.get("unlikely_fit_roles") or []):
-        risk_points.append(f"风险：候选人画像通常不适合{ROLE_TYPE_LABELS.get(role_type, role_type)}岗位")
+        risk_points.append(f"对方画像通常不适合{ROLE_TYPE_LABELS.get(role_type, role_type)}岗位")
 
-    base = 45
+    score = 45
     if persona_match:
-        base += 25
+        score += 25
     elif persona_type == "unknown" or role_type == "unknown":
-        base -= 10
+        score -= 10
     else:
-        base -= 20
-    base += min(25, len(_dedupe_keep_order(matched_points)) * 6)
-    base -= min(25, len(_dedupe_keep_order(missing_points)) * 4)
-    base -= min(30, len(_dedupe_keep_order(risk_points)) * 15)
+        score -= 22
+    score += min(25, len(matched_points) * 5)
+    score -= min(24, len(missing_points) * 3)
+    score -= min(30, len(risk_points) * 10)
 
-    if role_type == "ai_video" and _contains_any(c_text, ["AI视频", "剪辑", "分镜", "ComfyUI", "Stable Diffusion", "镜头", "动画"]):
-        base = max(base, 72)
     if role_type == "recruitment" and persona_type == "recruiter":
-        base = max(base, 75)
+        # Strong recruiter evidence should overcome target-keyword noise like TA/AIGC.
+        if _contains_any(c_text, ["游戏", "网易", "趣加", "三七互娱", "FunPlus"]):
+            matched_points.append("匹配：游戏行业招聘资源")
+            score += 8
+        if _contains_any(c_text, ["高端", "高招", "战略招聘", "负责人"]):
+            matched_points.append("匹配：高端岗位交付")
+            score += 6
+        if _contains_any(c_text, ["人才地图", "Mapping", "mapping", "寻访"]):
+            matched_points.append("匹配：人才地图/Mapping")
+            score += 6
+        score = max(score, 86 if len(_dedupe_keep_order(matched_points)) >= 3 else 78)
+    if role_type == "ai_video" and persona_type == "ai_video_creator":
+        score = max(score, 85 if len(_dedupe_keep_order(matched_points)) >= 2 else 76)
+    if role_type == "technical_art" and persona_type == "technical_artist":
+        score = max(score, 78)
+    if role_type == "art" and persona_type == "artist":
+        score = max(score, 76)
 
-    score = max(0, min(100, int(base)))
+    score = max(0, min(100, int(score)))
     level = _level_from_semantic_score(score)
-    if score >= 75 and not risk_points:
-        fit_result, message_intent, action = "strong_fit", "connect", "建议建立链接并进一步确认关键经验"
-    elif score >= 55:
+    score, level = _cap_match_for_reliability(score, level, reliability)
+
+    if score >= 85 and not risk_points:
+        fit_result, message_intent, action = "strong_fit", "connect", "建议建立链接，重点围绕匹配经历沟通"
+    elif score >= 65 and not risk_points:
         fit_result, message_intent, action = "possible_fit", "ask_more", "建议补充确认关键能力后再推进"
     elif score >= 40:
         fit_result, message_intent, action = "weak_fit", "observe", "低压力了解，暂不强推"
     else:
         fit_result, message_intent, action = "not_fit", "reject", "不建议继续推进"
 
-    reliability = "high" if job_profile.get("must_have") and persona_type != "unknown" else ("medium" if role_type != "unknown" else "low")
     return {
         "score": score,
         "level": level,
@@ -765,11 +866,15 @@ def analyze_match_intelligence(job_profile: dict, candidate_profile: dict, candi
         "message_intent": message_intent,
         "matched_points": _dedupe_keep_order(matched_points),
         "missing_points": _dedupe_keep_order(missing_points),
-        "risk_points": _dedupe_keep_order(risk_points + (candidate_profile.get("risk_points") or [])),
-        "decision_summary": f"岗位画像为{ROLE_TYPE_LABELS.get(role_type, role_type)}，候选人画像为{persona_type}；基于画像一致性、关键能力和风险项综合判断。",
+        "risk_points": _dedupe_keep_order(risk_points),
+        "decision_summary": f"岗位画像为{ROLE_TYPE_LABELS.get(role_type, role_type)}，对方画像为{persona_type}；按岗位本质、画像一致性、关键能力和风险项综合判断。",
         "recommended_action": action,
         "reliability": reliability,
     }
+
+
+def analyze_match_intelligence(job_profile: dict, candidate_profile: dict, candidate: dict | None = None, job_config: dict | None = None) -> dict:
+    return semantic_match(job_profile, candidate_profile, candidate or {}, job_config or {})
 
 
 def _semantic_result_to_priority_result(match: dict, context_id: str) -> dict:
@@ -1105,6 +1210,8 @@ def _job_core_requirement_phrase(job_config: dict, missing_points: list[str]) ->
         + [str(x) for x in (job_config.get("requirements") or [])[:8]]
         + [str(x) for x in (job_config.get("preferred_keywords") or [])[:8]]
     )
+    if _contains_any(safe_job_text, ["高招", "招聘", "猎头", "HRBP", "人力资源", "人才地图", "Mapping"]):
+        return "招聘交付、人才地图和高端岗位沟通经验"
     if _contains_any(safe_job_text, ["AI视频", "ComfyUI", "Stable Diffusion", "剪辑", "镜头"]):
         return "AI视频、剪辑、AI工具和镜头语言经验"
     if _contains_any(safe_job_text, ["技术美术", "TA", "Shader", "Unity", "UE"]):
@@ -1173,7 +1280,17 @@ def regenerate_safe_message(safe_input: dict, strategy: str = "低压力观察�
 
 def final_message_guard(message: str, safe_input: dict, strategy: str, raw_sources: list[str] | None = None) -> str:
     if contains_raw_chat_leak(message, raw_sources):
-        return regenerate_safe_message(safe_input, strategy)
+        message = regenerate_safe_message(safe_input, strategy)
+    forbidden_replacements = {
+        "候选人": "人才",
+        "相关信号": "相关经历",
+        "已读": "",
+        "送达": "",
+    }
+    for old, new_value in forbidden_replacements.items():
+        message = message.replace(old, new_value)
+    message = re.sub(r"\b\d{2}-\d{2}\s+\d{1,2}:\d{2}\b", "", message)
+    message = re.sub(r"\s+", " ", message).strip()
     return message
 
 
@@ -1202,7 +1319,7 @@ def _message_detail_phrase(points: list[str], fallback: str) -> str:
 def generate_message_from_safe_input(safe_input: dict, raw_sources: list[str] | None = None) -> dict:
     name = safe_input["candidate_name"]
     job_title = safe_input["job_title"]
-    matched_text = _message_detail_phrase(safe_input.get("matched_points") or [], "你的部分经历")
+    matched_text = _message_detail_phrase(safe_input.get("matched_points") or [], "过往经历")
     missing_text = _message_detail_phrase(safe_input.get("missing_points") or [], safe_input.get("core_requirement") or "岗位关键经验")
     core_requirement = safe_input.get("core_requirement") or "岗位核心能力"
     intent = safe_input.get("message_intent") or "ask_more"
@@ -1215,19 +1332,19 @@ def generate_message_from_safe_input(safe_input: dict, raw_sources: list[str] | 
 
     if intent == "connect" and not no_push:
         strategy = "建立链接型"
-        message = f"{name}你好，看了下你的经历，{matched_text}和我们当前{job_title}方向比较接近。想和你简单同步下这个机会，也了解下你近期是否会考虑类似方向？"
-        reason = f"基于岗位画像和候选人画像生成；沟通阶段：{stage}"
+        message = f"{name}你好，我看了下你的经历，{matched_text}和我们现在看的{job_title}挺接近的。想先和你简单同步下岗位情况，也了解下你最近是否会看看新的机会？"
+        reason = f"画像匹配度较高，适合先建立链接；沟通阶段：{stage}"
     elif intent == "ask_more" and not no_push:
         strategy = "补充确认型"
-        message = f"{name}你好，看了下你的经历，{matched_text}和当前{job_title}有一些交集。我想再确认下，{missing_text}这块你之前是否有实际参与过？方便的话可以简单说下。"
+        message = f"{name}你好，我看你的经历和{job_title}有一些交集，想再确认下：{missing_text}这部分你之前参与得多吗？如果方便，可以简单聊两句。"
         reason = f"围绕关键缺口做补充确认；沟通阶段：{stage}"
     elif intent == "observe" or no_push:
-        strategy = "低压力了解型"
-        message = f"{name}你好，我看你过往经历里有一些和{job_title}可能相关的部分，但还需要再确认具体方向。你如果近期方便，可以先低压力了解下；不合适也没关系。"
+        strategy = "低压力观察型"
+        message = f"{name}你好，看到你的一些经历可能和{job_title}有交集，但我还不确定方向是否完全合适。你如果愿意，可以先低压力了解下；不合适也完全没关系。"
         reason = f"匹配度或沟通意愿不确定，避免强推；沟通阶段：{stage}"
     else:
         strategy = "礼貌暂不推进型"
-        message = f"{name}你好，感谢你的回复。我这边看了下当前{job_title}的核心要求，现阶段更看重{core_requirement}，和你目前经历可能不完全一致，这次先不打扰你，后续有更合适的方向再联系你。"
+        message = f"{name}你好，感谢你花时间沟通。我这边重新看了下，当前{job_title}更看重{core_requirement}，和你现在的方向不太一致，这次就先不打扰你了。后面如果有更合适的机会，我再联系你。"
         reason = "语义匹配结果不适合继续推进"
 
     return {"strategy": strategy, "message": final_message_guard(message, safe_input, strategy, raw_sources), "reason": reason}
@@ -1255,7 +1372,9 @@ def message_generate(payload: dict) -> dict:
         raise HTTPException(status_code=400, detail="缺少候选人姓名或岗位信息，无法生成精准话术")
 
     jd_complete = bool(job_config.get("jd_complete") or job_config.get("description") or job_config.get("requirements") or job_config.get("responsibilities"))
-    message_intent = summary["message_intent"] if jd_complete else "ask_more"
+    message_intent = summary["message_intent"]
+    if not jd_complete and message_intent == "connect":
+        message_intent = "ask_more"
     safe_input = {
         "candidate_name": name,
         "job_title": job_title,
