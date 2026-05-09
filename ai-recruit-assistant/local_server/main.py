@@ -520,9 +520,25 @@ def _short_point(value: str, prefix: str = "") -> str:
     return text[:36]
 
 
+def _safe_generated_name(value: str) -> str:
+    raw = str(value or "").strip()
+    match = re.match(r"^[\u4e00-\u9fa5]{2,4}", raw)
+    return match.group(0) if match else sanitize_text_for_message(raw)[:12]
+
+
+def _safe_generated_job_title(value: str) -> str:
+    raw = str(value or "").strip()
+    if contains_raw_chat_leak(raw):
+        return ""
+    cleaned = sanitize_text_for_message(raw)
+    if contains_raw_chat_leak(cleaned):
+        return ""
+    return cleaned[:40]
+
+
 def build_candidate_fit_summary(candidate: dict, job_config: dict, priority_result: dict) -> dict:
-    candidate_name = str(candidate.get("name") or "候选人").strip() or "候选人"
-    job_title = str(job_config.get("title") or job_config.get("job_title") or "该岗位").strip() or "该岗位"
+    candidate_name = _safe_generated_name(candidate.get("name") or "候选人") or "候选人"
+    job_title = _safe_generated_job_title(job_config.get("title") or job_config.get("job_title") or "") or "该岗位"
     matched = [_short_point(x) for x in (priority_result.get("matched_points") or [])]
     missing = [_short_point(x) for x in (priority_result.get("missing_points") or [])]
     risks = [_short_point(x) for x in (priority_result.get("risk_points") or [])]
@@ -586,6 +602,9 @@ def _matching_points(candidate: dict, job_title: str) -> list[str]:
 
 
 RAW_CHAT_LEAK_PATTERNS = [
+    "黄宥源 AI视频 [送达]好滴", "陈婧铭 技术美术-TA [送达]你熟悉哪个引擎？",
+    "张建渠 技术美术-动画TA [已读]目前也没计划~", "魏晓飞 高招HR [已读]我们是承接的项目",
+    "顾思琪 特效原画/角色美宣/角色设计 [已读]",
     "目前也没计划", "我们是承接的项目", "沟通职位", "沟通的职位", "已读", "送达", "您好，我是", "你熟悉哪个引擎",
 ]
 
@@ -665,8 +684,15 @@ def message_generate(payload: dict) -> dict:
     priority_result = payload.get("priority_result", {}) or {}
     job_config = payload.get("job_config", {}) or {}
     context_id = payload.get("context_id", "")
-    raw_chat_text = str(payload.get("chat_text", "") or "")
-    chat_context = summarize_chat_context(raw_chat_text)
+    # Message generation must not consume raw chat/page text. The extension may pass
+    # only a compact summary produced by the explicit chat analysis flow.
+    incoming_chat_context = payload.get("chat_context_summary", {}) or {}
+    chat_context = {
+        "stage": str(incoming_chat_context.get("stage") or "未沟通"),
+        "last_candidate_intent": str(incoming_chat_context.get("last_candidate_intent") or ""),
+        "avoid_repeating": list(incoming_chat_context.get("avoid_repeating") or []),
+        "known_objections": list(incoming_chat_context.get("known_objections") or []),
+    }
     summary = build_candidate_fit_summary(candidate, job_config, priority_result)
 
     name = summary["candidate_name"]
@@ -686,13 +712,9 @@ def message_generate(payload: dict) -> dict:
         "message_intent": summary["message_intent"],
         "core_requirement": _job_core_requirement_phrase(job_config, summary["top_missing_points"]),
     }
-    # HARD RULE: variants are generated only from SAFE_MESSAGE_INPUT. Raw chat/page/JD text is only passed to the guard for leak detection.
-    raw_sources = [
-        raw_chat_text,
-        str(candidate.get("raw_text") or ""),
-        str(job_config.get("raw_text") or ""),
-    ]
-    variants = [generate_message_from_safe_input(safe_input, raw_sources)]
+    # HARD RULE: variants are generated only from SAFE_MESSAGE_INPUT. Raw chat/page/JD
+    # text is not accepted here and is never used as generation or guard source.
+    variants = [generate_message_from_safe_input(safe_input, [])]
 
     log_event("generate_message", f"{name}:{job_title}:{context_id}:{safe_input['message_intent']}:{chat_context['stage']}")
     return {"variants": variants, "chat_context": chat_context, "fit_summary": summary}
