@@ -26,7 +26,7 @@ SERVER_FILES = [
     "run_server.py",
 ]
 SERVICE_DIRS = ["services"]
-ROOT_FILES = ["README.md", "start_local_server.py", "start_windows.bat"]
+ROOT_FILES = ["README.md", "README_INTERNAL.md", "start_local_server.py", "start_windows.bat", "install.bat", "start.bat"]
 DOC_FILES = ["INTERNAL_TRIAL_USER_MANUAL.md"]
 
 
