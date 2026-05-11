@@ -523,7 +523,7 @@ async function generateMessages(){
   if(!state.candidate?.name || !state.job?.title || !state.priorityResult){ feedback('缺少候选人或岗位信息，请先刷新上下文/分析候选人'); return; }
   try{
     const jobCfg=jobConfigForApi();
-    const safeCandidate={name:state.candidate.name,skills:state.candidate.skills||[],project_keywords:state.candidate.project_keywords||[],current_title:state.candidate.current_title||state.candidate.title||'',expected_position:state.candidate.expected_position||''};
+    const safeCandidate={name:state.candidate.name,skills:state.candidate.skills||[],project_keywords:state.candidate.project_keywords||[],current_title:state.candidate.current_title||state.candidate.title||'',expected_position:state.candidate.expected_position||'',structured_resume:state.candidate.structured_resume||null};
     const safeJob={title:jobCfg.title,job_title:jobCfg.job_title,description:jobCfg.description||'',responsibilities:jobCfg.responsibilities||[],requirements:jobCfg.requirements||[],preferred_keywords:jobCfg.preferred_keywords||[],jd_complete:jobCfg.jd_complete,source:jobCfg.source};
     const data=await api('/api/message/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:safeCandidate,job_config:safeJob,priority_result:state.priorityResult,context_id:state.contextId,chat_context_summary:{stage:state.chatResult?.stage||'',last_candidate_intent:state.chatResult?.last_candidate_intent||'',known_objections:state.chatResult?.known_objections||[]}})});
     state.messageVariants=data.variants||[];

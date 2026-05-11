@@ -479,6 +479,17 @@ def _cap_level(level: str, max_level: str) -> str:
 
 def _candidate_text(candidate: dict) -> str:
     parts: list[str] = []
+    structured = candidate.get("structured_resume") or candidate.get("resume_structured") or {}
+    if isinstance(structured, dict):
+        for key in ["current_title", "city", "education", "industries", "roles", "skills", "companies", "projects", "keywords", "recruiting_domains"]:
+            value = structured.get(key)
+            if isinstance(value, list):
+                parts.extend(str(item) for item in value if str(item).strip())
+            elif value:
+                parts.append(str(value))
+        for key in ["game_related", "ai_related", "tech_related"]:
+            if structured.get(key):
+                parts.append(key)
     for key in ["raw_text", "expected_position", "current_title", "title", "education", "salary_expectation"]:
         value = candidate.get(key)
         if value:
@@ -490,7 +501,6 @@ def _candidate_text(candidate: dict) -> str:
         else:
             parts.append(str(value))
     return " ".join(parts)
-
 
 def _job_text(job_config: dict) -> str:
     parts: list[str] = []
@@ -829,6 +839,9 @@ def parse_candidate_profile(candidate: dict) -> dict:
         return llm_result
 
     text = _candidate_text(candidate)
+    structured = candidate.get("structured_resume") or candidate.get("resume_structured") or {}
+    if not isinstance(structured, dict):
+        structured = {}
     persona_type = "unknown"
     core_strengths: list[str] = []
     evidence: list[str] = []
@@ -847,16 +860,24 @@ def parse_candidate_profile(candidate: dict) -> dict:
     ai_hits = _word_hits(text, ai_video_words)
     artist_hits = _word_hits(text, artist_words)
     engineer_hits = _word_hits(text, engineer_words)
+    recruiting_domains = structured.get("recruiting_domains") or []
+    structured_roles = structured.get("roles") or []
+    structured_skills = structured.get("skills") or []
+    structured_industries = structured.get("industries") or []
+    if recruiting_domains:
+        recruiter_hits = _dedupe_keep_order(recruiter_hits + [str(item) for item in recruiting_domains])
+    if structured.get("game_related") and "游戏" not in structured_industries:
+        structured_industries = [*structured_industries, "游戏"]
 
     # Recruitment evidence wins when explicit recruiting delivery terms exist;
     # this prevents “招聘TA/AIGC专家” target terms from turning a recruiter into a TA.
-    if recruiter_hits and _contains_any(text, ["招聘", "高招", "猎头", "HRBP", "人力资源", "人才地图", "Mapping", "mapping", "招聘交付", "高端战略招聘"]):
+    if recruiter_hits and (recruiting_domains or _contains_any(text, ["招聘", "高招", "猎头", "HRBP", "人力资源", "人才地图", "Mapping", "mapping", "招聘交付", "高端战略招聘"])):
         persona_type = "recruiter"
-    elif ta_hits:
+    elif ta_hits or any(item in {"技术美术", "TA", "Unity", "UE"} for item in structured_roles + structured_skills):
         persona_type = "technical_artist"
-    elif ai_hits:
+    elif ai_hits or structured.get("ai_related"):
         persona_type = "ai_video_creator"
-    elif artist_hits:
+    elif artist_hits or any(item in {"原画", "动画", "特效", "美术负责人"} for item in structured_roles):
         persona_type = "artist"
     elif engineer_hits:
         persona_type = "engineer"
@@ -866,7 +887,7 @@ def parse_candidate_profile(candidate: dict) -> dict:
         likely_fit_roles = ["recruitment"]
         unlikely_fit_roles = ["technical_art", "art", "ai_video"]
         evidence = recruiter_hits[:8]
-        if not _contains_any(text, ["游戏", "网易", "趣加", "三七互娱", "FunPlus"]):
+        if not (structured.get("game_related") or _contains_any(text, ["游戏", "网易", "趣加", "三七互娱", "FunPlus"])):
             risk_points.append("未明确看到游戏行业招聘经历")
     elif persona_type == "technical_artist":
         core_strengths = ["技术美术/TA", "引擎或Shader", "美术工具链", "技术与美术协作"]
