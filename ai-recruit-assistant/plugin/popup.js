@@ -488,6 +488,90 @@ async function saveJobConfig(){
   await saveJobProfile();
 }
 
+function candidateAssetPayload(){
+  const c=state.candidate||{};
+  return {
+    name:c.name||'',
+    age:c.age||null,
+    city:c.expected_city||c.city||'',
+    education:c.education||'',
+    experience_years:c.experience_years??null,
+    current_title:c.current_title||c.title||'',
+    expected_position:c.expected_position||'',
+    skills:c.skills||[],
+    resume_text:c.raw_text||($('candidate-manual')?.value||''),
+    resume_hash:c.resume_hash||'',
+    source_url:c.source_url||state.pageContext?.url||'',
+  };
+}
+
+function jobAssetPayload(){
+  const job=jobConfigForApi();
+  return {
+    job_title:job.title||job.job_title||'',
+    city:job.city||'',
+    salary:job.salary||'',
+    experience_required:job.experience_required||'',
+    education_required:job.education_required||'',
+    responsibilities:job.responsibilities||[],
+    requirements:job.requirements||[],
+    preferred_keywords:job.preferred_keywords||[],
+    jd_hash:job.jd_hash||'',
+    description:job.description||'',
+    raw_text:job.raw_text||job.description||'',
+  };
+}
+
+async function saveCandidateAsset({silent=false}={}){
+  manualCandidateIfNeeded();
+  const payload=candidateAssetPayload();
+  if(!payload.name || !(payload.resume_text || payload.current_title || payload.expected_position)){ if(!silent) feedback('数据不完整','warn'); return null; }
+  try{
+    const data=await api('/api/candidates/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    state.candidate={...(state.candidate||{}),asset_id:data.candidate_id};
+    if(!silent) feedback('候选人已保存');
+    return data;
+  }catch(e){ if(!silent) feedback(`保存失败：${e.message}`,'warn'); return null; }
+}
+
+async function saveJobAsset({silent=false}={}){
+  const payload=jobAssetPayload();
+  if(!payload.job_title){ if(!silent) feedback('数据不完整','warn'); return null; }
+  try{
+    const data=await api('/api/jobs/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    state.job={...(state.job||{}),asset_id:data.job_id};
+    if(!silent) feedback('岗位已保存');
+    return data;
+  }catch(e){ if(!silent) feedback(`保存失败：${e.message}`,'warn'); return null; }
+}
+
+async function saveMatchAsset({silent=false}={}){
+  if(!state.priorityResult){ if(!silent) feedback('数据不完整','warn'); return null; }
+  const candidateSaved=state.candidate?.asset_id?{candidate_id:state.candidate.asset_id}:await saveCandidateAsset({silent:true});
+  const jobSaved=state.job?.asset_id?{job_id:state.job.asset_id}:await saveJobAsset({silent:true});
+  const candidate_id=candidateSaved?.candidate_id;
+  const job_id=jobSaved?.job_id;
+  if(!candidate_id || !job_id){ if(!silent) feedback('数据不完整','warn'); return null; }
+  try{
+    const data=await api('/api/matches/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate_id,job_id,score:state.priorityResult.score,level:state.priorityResult.level,match_reason:(state.priorityResult.reasons||[]).join('；'),risk_notes:(state.priorityResult.risk_points||[]).join('；'),recommended_action:state.priorityResult.recommended_action||'',ai_analysis:state.priorityResult.fit_result||''})});
+    if(!silent) feedback('匹配记录已保存');
+    return data;
+  }catch(e){ if(!silent) feedback(`保存失败：${e.message}`,'warn'); return null; }
+}
+
+async function viewMatchHistory(){
+  try{
+    if(state.priorityResult) await saveMatchAsset({silent:true});
+    const data=await api('/api/matches');
+    const box=$('match-history-list');
+    if(box){
+      const items=(data.items||[]).slice(0,5);
+      box.innerHTML=items.length?items.map((item)=>`<div class="reply-box"><b>${item.candidate_name||'-'}</b> × <b>${item.job_title||'-'}</b><br>分数：${item.match_score??'-'} / ${item.match_level||'-'}<br>${item.recommended_action||''}</div>`).join(''):'暂无历史匹配';
+    }
+    feedback(state.priorityResult?'匹配记录已保存':'历史匹配已加载');
+  }catch(e){ feedback(`保存失败：${e.message}`,'warn'); }
+}
+
 async function track(event_type,payload={}){
   await api('/api/events/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_type,candidate_hash:state.candidate?.name||state.contextId,payload:{...payload,context_id:state.contextId}})});
   await refreshTodayStats();
@@ -671,6 +755,9 @@ function bind(){
   $('analyze-btn').onclick=analyzeCandidate;
   $('generate-message-btn').onclick=generateMessages;
   $('save-job-config-btn').onclick=saveJobProfile;
+  const saveCandidateAssetBtn=$('save-candidate-asset-btn'); if(saveCandidateAssetBtn) saveCandidateAssetBtn.onclick=()=>saveCandidateAsset();
+  const saveJobAssetBtn=$('save-job-asset-btn'); if(saveJobAssetBtn) saveJobAssetBtn.onclick=()=>saveJobAsset();
+  const viewMatchHistoryBtn=$('view-match-history-btn'); if(viewMatchHistoryBtn) viewMatchHistoryBtn.onclick=viewMatchHistory;
   const saveProfileBtn=$('save-job-profile-btn'); if(saveProfileBtn) saveProfileBtn.onclick=saveJobProfile;
   const loadProfileBtn=$('load-job-profile-btn'); if(loadProfileBtn) loadProfileBtn.onclick=loadCurrentJobProfile;
   $('save-mode-btn').onclick=saveMode;

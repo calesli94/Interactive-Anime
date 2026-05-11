@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+from datetime import datetime
+from hashlib import sha256
+import json
+from typing import Any
+
+from database import get_db_connection, init_recruitment_db
+from models import CandidateSaveRequest, JobSaveRequest, MatchSaveRequest
+
+
+def now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def stable_hash(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    return sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
+def json_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value or [], ensure_ascii=False)
+
+
+def lines_text(value: Any) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "")
+
+
+def row_to_dict(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    for key in ["skills_json", "preferred_keywords_json"]:
+        if key in item:
+            try:
+                item[key.replace("_json", "")] = json.loads(item[key] or "[]")
+            except json.JSONDecodeError:
+                item[key.replace("_json", "")] = []
+    return item
+
+
+def find_candidate_duplicate(conn, payload: CandidateSaveRequest) -> int | None:
+    if payload.resume_hash:
+        row = conn.execute("SELECT id FROM candidates WHERE resume_hash = ?", (payload.resume_hash,)).fetchone()
+        if row:
+            return row["id"]
+    if payload.name and payload.current_title:
+        row = conn.execute(
+            "SELECT id FROM candidates WHERE name = ? AND current_title = ? ORDER BY updated_at DESC LIMIT 1",
+            (payload.name, payload.current_title),
+        ).fetchone()
+        if row:
+            return row["id"]
+    if payload.name and payload.experience_years is not None:
+        row = conn.execute(
+            "SELECT id FROM candidates WHERE name = ? AND experience_years = ? ORDER BY updated_at DESC LIMIT 1",
+            (payload.name, payload.experience_years),
+        ).fetchone()
+        if row:
+            return row["id"]
+    return None
+
+
+def save_candidate(data: CandidateSaveRequest | dict[str, Any]) -> dict[str, Any]:
+    init_recruitment_db()
+    payload = data if isinstance(data, CandidateSaveRequest) else CandidateSaveRequest(**data)
+    resume_text = payload.resume_text or payload.raw_text
+    resume_hash = payload.resume_hash or stable_hash(resume_text)
+    if not payload.name or not (resume_text or payload.current_title or payload.expected_position):
+        raise ValueError("候选人数据不完整")
+    now = now_iso()
+    conn = get_db_connection()
+    try:
+        normalized = {
+            "name": payload.name.strip(),
+            "age": payload.age,
+            "city": payload.city.strip(),
+            "education": payload.education.strip(),
+            "experience_years": payload.experience_years,
+            "current_title": payload.current_title.strip(),
+            "expected_position": payload.expected_position.strip(),
+            "skills_json": payload.skills_json or json_text(payload.skills),
+            "resume_text": resume_text,
+            "resume_hash": resume_hash,
+            "source_url": payload.source_url,
+            "ai_summary": payload.ai_summary,
+            "embedding": payload.embedding,
+            "updated_at": now,
+        }
+        existing_id = find_candidate_duplicate(conn, CandidateSaveRequest(**{**payload.dict(), "resume_text": resume_text, "resume_hash": resume_hash}))
+        if existing_id:
+            conn.execute(
+                """
+                UPDATE candidates SET name=:name, age=:age, city=:city, education=:education,
+                    experience_years=:experience_years, current_title=:current_title,
+                    expected_position=:expected_position, skills_json=:skills_json, resume_text=:resume_text,
+                    resume_hash=:resume_hash, source_url=:source_url, ai_summary=:ai_summary,
+                    embedding=:embedding, updated_at=:updated_at
+                WHERE id=:id
+                """,
+                {**normalized, "id": existing_id},
+            )
+            candidate_id = existing_id
+            action = "updated"
+        else:
+            conn.execute(
+                """
+                INSERT INTO candidates (name, age, city, education, experience_years, current_title,
+                    expected_position, skills_json, resume_text, resume_hash, source_url, ai_summary,
+                    embedding, created_at, updated_at)
+                VALUES (:name, :age, :city, :education, :experience_years, :current_title,
+                    :expected_position, :skills_json, :resume_text, :resume_hash, :source_url,
+                    :ai_summary, :embedding, :created_at, :updated_at)
+                """,
+                {**normalized, "created_at": now},
+            )
+            candidate_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            action = "inserted"
+        conn.commit()
+        row = conn.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
+        return {"status": "ok", "action": action, "candidate": row_to_dict(row), "candidate_id": candidate_id}
+    finally:
+        conn.close()
+
+
+def find_job_duplicate(conn, payload: JobSaveRequest, jd_hash: str) -> int | None:
+    if jd_hash:
+        row = conn.execute("SELECT id FROM jobs WHERE jd_hash = ?", (jd_hash,)).fetchone()
+        if row:
+            return row["id"]
+    job_title = payload.job_title or payload.title
+    if job_title and payload.city and payload.salary:
+        row = conn.execute(
+            "SELECT id FROM jobs WHERE job_title = ? AND city = ? AND salary = ? ORDER BY updated_at DESC LIMIT 1",
+            (job_title, payload.city, payload.salary),
+        ).fetchone()
+        if row:
+            return row["id"]
+    return None
+
+
+def save_job(data: JobSaveRequest | dict[str, Any]) -> dict[str, Any]:
+    init_recruitment_db()
+    payload = data if isinstance(data, JobSaveRequest) else JobSaveRequest(**data)
+    job_title = (payload.job_title or payload.title).strip()
+    responsibilities = lines_text(payload.responsibilities)
+    requirements = lines_text(payload.requirements)
+    jd_text = payload.raw_text or payload.description or "\n".join([responsibilities, requirements])
+    jd_hash = payload.jd_hash or stable_hash(jd_text)
+    if not job_title:
+        raise ValueError("岗位数据不完整")
+    now = now_iso()
+    conn = get_db_connection()
+    try:
+        normalized = {
+            "job_title": job_title,
+            "city": payload.city.strip(),
+            "salary": payload.salary.strip(),
+            "experience_required": payload.experience_required.strip(),
+            "education_required": payload.education_required.strip(),
+            "responsibilities": responsibilities,
+            "requirements": requirements,
+            "preferred_keywords_json": payload.preferred_keywords_json or json_text(payload.preferred_keywords),
+            "jd_hash": jd_hash,
+            "ai_summary": payload.ai_summary,
+            "embedding": payload.embedding,
+            "updated_at": now,
+        }
+        existing_id = find_job_duplicate(conn, payload, jd_hash)
+        if existing_id:
+            conn.execute(
+                """
+                UPDATE jobs SET job_title=:job_title, city=:city, salary=:salary,
+                    experience_required=:experience_required, education_required=:education_required,
+                    responsibilities=:responsibilities, requirements=:requirements,
+                    preferred_keywords_json=:preferred_keywords_json, jd_hash=:jd_hash,
+                    ai_summary=:ai_summary, embedding=:embedding, updated_at=:updated_at
+                WHERE id=:id
+                """,
+                {**normalized, "id": existing_id},
+            )
+            job_id = existing_id
+            action = "updated"
+        else:
+            conn.execute(
+                """
+                INSERT INTO jobs (job_title, city, salary, experience_required, education_required,
+                    responsibilities, requirements, preferred_keywords_json, jd_hash, ai_summary,
+                    embedding, created_at, updated_at)
+                VALUES (:job_title, :city, :salary, :experience_required, :education_required,
+                    :responsibilities, :requirements, :preferred_keywords_json, :jd_hash,
+                    :ai_summary, :embedding, :created_at, :updated_at)
+                """,
+                {**normalized, "created_at": now},
+            )
+            job_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            action = "inserted"
+        conn.commit()
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return {"status": "ok", "action": action, "job": row_to_dict(row), "job_id": job_id}
+    finally:
+        conn.close()
+
+
+def save_match(data: MatchSaveRequest | dict[str, Any]) -> dict[str, Any]:
+    init_recruitment_db()
+    payload = data if isinstance(data, MatchSaveRequest) else MatchSaveRequest(**data)
+    candidate_id = payload.candidate_id
+    job_id = payload.job_id
+    if not candidate_id and payload.candidate:
+        candidate_id = save_candidate(payload.candidate)["candidate_id"]
+    if not job_id and payload.job:
+        job_id = save_job(payload.job)["job_id"]
+    if not candidate_id or not job_id:
+        raise ValueError("匹配记录数据不完整")
+    match_reason = payload.match_reason or "；".join(payload.reasons)
+    risk_notes = payload.risk_notes or "；".join(payload.risk_points)
+    match_score = payload.match_score if payload.match_score is not None else payload.score
+    match_level = payload.match_level or payload.level
+    now = now_iso()
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO matches (candidate_id, job_id, match_score, match_level, match_reason,
+                risk_notes, recommended_action, ai_analysis, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (candidate_id, job_id, match_score, match_level, match_reason, risk_notes, payload.recommended_action, payload.ai_analysis, now),
+        )
+        match_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        conn.commit()
+        row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+        return {"status": "ok", "match": row_to_dict(row), "match_id": match_id}
+    finally:
+        conn.close()
+
+
+def list_candidates() -> list[dict[str, Any]]:
+    init_recruitment_db()
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT * FROM candidates ORDER BY updated_at DESC LIMIT 200").fetchall()
+        return [row_to_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def search_candidates(q: str) -> list[dict[str, Any]]:
+    init_recruitment_db()
+    like = f"%{q.strip()}%"
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM candidates
+            WHERE name LIKE ? OR current_title LIKE ? OR expected_position LIKE ?
+               OR education LIKE ? OR skills_json LIKE ? OR resume_text LIKE ?
+            ORDER BY updated_at DESC LIMIT 100
+            """,
+            (like, like, like, like, like, like),
+        ).fetchall()
+        return [row_to_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_jobs() -> list[dict[str, Any]]:
+    init_recruitment_db()
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 200").fetchall()
+        return [row_to_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_matches() -> list[dict[str, Any]]:
+    init_recruitment_db()
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.*, c.name AS candidate_name, j.job_title
+            FROM matches m
+            LEFT JOIN candidates c ON c.id = m.candidate_id
+            LEFT JOIN jobs j ON j.id = m.job_id
+            ORDER BY m.created_at DESC LIMIT 200
+            """
+        ).fetchall()
+        return [row_to_dict(row) for row in rows]
+    finally:
+        conn.close()

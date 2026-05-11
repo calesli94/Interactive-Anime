@@ -10,12 +10,19 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config import settings
 from db import get_connection, init_db
+from database import init_recruitment_db
+from routes.candidates import router as candidates_router
+from routes.jobs import router as jobs_router
+from routes.matches import router as matches_router
 from services.message_service import generate_messages
 from services.mode_service import GreetingModeConfig, get_mode_config, init_mode_table, save_mode_config
 from services.priority_service import AnalyzeRequest, analyze_priority
 from services.stats_service import get_today_stats, init_stats_table, log_event
 
 app = FastAPI(title=settings.APP_NAME)
+app.include_router(candidates_router)
+app.include_router(jobs_router)
+app.include_router(matches_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +44,7 @@ def on_startup() -> None:
     init_stats_table()
     init_followups_table()
     init_job_profiles_table()
+    init_recruitment_db()
 
 
 @app.get("/", response_class=HTMLResponse)
