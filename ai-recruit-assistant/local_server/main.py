@@ -11,14 +11,19 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from config import settings
 from db import get_connection, init_db
 from database import init_recruitment_db
-from routes import assert_asset_routes_registered, register_asset_routes
+from routes import assert_asset_routes_registered
+from routes.candidates import router as candidates_router
+from routes.jobs import router as jobs_router
+from routes.matches import router as matches_router
 from services.message_service import generate_messages
 from services.mode_service import GreetingModeConfig, get_mode_config, init_mode_table, save_mode_config
 from services.priority_service import AnalyzeRequest, analyze_priority
 from services.stats_service import get_today_stats, init_stats_table, log_event
 
 app = FastAPI(title=settings.APP_NAME)
-register_asset_routes(app)
+app.include_router(candidates_router)
+app.include_router(jobs_router)
+app.include_router(matches_router)
 assert_asset_routes_registered(app)
 
 app.add_middleware(

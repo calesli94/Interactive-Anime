@@ -565,7 +565,7 @@ async function viewMatchHistory(){
     const data=await api('/api/matches');
     const box=$('match-history-list');
     if(box){
-      const items=(data.items||[]).slice(0,5);
+      const items=(Array.isArray(data)?data:(data.items||[])).slice(0,5);
       box.innerHTML=items.length?items.map((item)=>`<div class="reply-box"><b>${item.candidate_name||'-'}</b> × <b>${item.job_title||'-'}</b><br>分数：${item.match_score??'-'} / ${item.match_level||'-'}<br>${item.recommended_action||''}</div>`).join(''):'暂无历史匹配';
     }
     feedback(state.priorityResult?'匹配记录已保存':'历史匹配已加载');

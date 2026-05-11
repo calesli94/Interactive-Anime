@@ -6,19 +6,20 @@ from models import CandidateSaveRequest
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
 
+@router.get("")
+def list_candidates_endpoint() -> list[dict]:
+    return list_candidates()
+
+
 @router.post("/save")
 def save_candidate_endpoint(payload: CandidateSaveRequest) -> dict:
     try:
-        return save_candidate(payload)
+        result = save_candidate(payload)
+        return {"ok": True, "candidate": result["candidate"], "candidate_id": result["candidate_id"], "action": result["action"]}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("")
-def list_candidates_endpoint() -> dict:
-    return {"items": list_candidates()}
-
-
 @router.get("/search")
-def search_candidates_endpoint(q: str = Query("")) -> dict:
-    return {"items": search_candidates(q) if q.strip() else list_candidates()}
+def search_candidates_endpoint(q: str = Query("")) -> list[dict]:
+    return search_candidates(q) if q.strip() else list_candidates()
