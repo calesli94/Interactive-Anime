@@ -1006,11 +1006,44 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     return uniq(words.filter((word) => _resumeContains(text, word)));
   }
 
+
+  function parseContactAssets(raw) {
+    const text = cleanText(raw);
+    const phone = (text.match(/(?:^|[^\d])(1[3-9]\d[\s-]?\d{4}[\s-]?\d{4})(?:[^\d]|$)/)?.[1] || "").replace(/[\s-]/g, "");
+    const email = text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)?.[0] || "";
+    const wechat = (text.match(/(?:微信号?|wx|wechat)\s*[:：]?\s*([A-Za-z][A-Za-z0-9_-]{5,19})/i)?.[1] || "").trim();
+    return { phone, wechat, email };
+  }
+
+  function parseCompanyAssets(raw) {
+    const known = ["网易", "腾讯", "腾讯游戏", "米哈游", "完美世界", "三七互娱", "FunPlus", "莉莉丝", "字节", "字节跳动", "鹰角", "叠纸", "4399", "趣加", "盛大", "IGG", "沐瞳", "巨人", "游族"];
+    const companyMatches = Array.from(String(raw || "").matchAll(/[\u4e00-\u9fa5A-Za-z0-9（）()]{2,30}(?:科技|网络|信息技术|互动|互娱|游戏|文化传媒|传媒)?有限公司/g)).map((m) => m[0]);
+    const companies = uniq([...collectResumeKeywords(raw, known), ...companyMatches]);
+    return { companies, company_keywords: companies };
+  }
+
+  function parseProjectAssets(raw) {
+    const projectWords = ["项目", "产品", "游戏", "参与项目", "负责项目", "作品集", "上线项目", "SLG", "MMO", "FPS", "ARPG", "开放世界", "二次元", "UE项目", "手游项目", "主机项目", "3A"];
+    const projects = linesOf(raw).filter((line) => /项目|产品|游戏|作品集|上线|SLG|MMO|FPS|ARPG|开放世界|二次元|UE项目|手游项目|主机项目/.test(line) && line.length <= 160).slice(0, 20);
+    const project_keywords = collectResumeKeywords(raw, projectWords);
+    return { projects: uniq(projects), project_keywords };
+  }
+
+  function parseStyleAssets(raw) {
+    const styleWords = ["欧美", "日韩", "二次元", "国风", "写实", "卡通", "Q版", "仙侠", "魔幻", "科幻", "末世", "暗黑", "女性向", "乙女", "赛博朋克", "休闲", "SLG", "MMO", "FPS", "3A", "开放世界"];
+    const styles = collectResumeKeywords(raw, styleWords);
+    return { styles, style_keywords: styles };
+  }
+
   function parseResumeStructured(resumeText) {
     const raw = cleanText(resumeText);
     const basics = parsePersonBasics(raw);
     const expected = expectedParts(raw);
-    const companies = collectResumeKeywords(raw, ["网易", "腾讯游戏", "米哈游", "莉莉丝", "FunPlus", "趣加", "三七", "三七互娱", "完美", "字节游戏", "盛大", "IGG", "沐瞳", "巨人", "游族"]);
+    const contact = parseContactAssets(raw);
+    const companyAssets = parseCompanyAssets(raw);
+    const projectAssets = parseProjectAssets(raw);
+    const styleAssets = parseStyleAssets(raw);
+    const companies = companyAssets.companies;
     const gameWords = ["游戏", "MMO", "SLG", "二次元", "主策划", "数值", "UE", "Unity", "技术美术", "原画", "动画", "TA", "特效", "美术外包", "发行", "海外发行"];
     const aiWords = ["AI", "AIGC", "Stable Diffusion", "ComfyUI", "LLM", "GPT", "Midjourney"];
     const industries = [];
@@ -1023,7 +1056,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     const roles = collectResumeKeywords(raw, ["技术美术", "TA", "原画", "动画", "特效", "视频", "招聘", "HR", "猎头", "制作人", "主策划", "程序", "Unity", "UE", "美术负责人", "技术负责人"]);
     const rejected_skills = collectResumeKeywords(raw, RESUME_SKILL_DENYLIST);
     const skills = collectResumeKeywords(raw, RESUME_SKILL_ALLOWLIST).filter((word) => !rejected_skills.includes(word));
-    const projects = linesOf(raw).filter((line) => /项目|游戏|作品|上线|发行|海外|AIGC|AI视频/.test(line) && line.length <= 120).slice(0, 12);
+    const projects = projectAssets.projects.length ? projectAssets.projects : linesOf(raw).filter((line) => /项目|游戏|作品|上线|发行|海外|AIGC|AI视频/.test(line) && line.length <= 120).slice(0, 12);
     const keywords = uniq([...industries, ...roles, ...skills, ...recruitingDomains, ...companies]);
     const game_related = industries.includes("游戏") || companies.length > 0;
     const ai_related = industries.includes("AI") || skills.some((item) => /Stable Diffusion|ComfyUI|Midjourney|AI/.test(item));
@@ -1038,8 +1071,15 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       industries: uniq(industries),
       roles,
       skills,
+      phone: contact.phone,
+      wechat: contact.wechat,
+      email: contact.email,
       companies,
       projects,
+      styles: styleAssets.styles,
+      project_keywords: projectAssets.project_keywords,
+      style_keywords: styleAssets.style_keywords,
+      company_keywords: companyAssets.company_keywords,
       keywords,
       recruiting_domains: uniq(recruitingDomains),
       game_related,
@@ -1073,9 +1113,18 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       expected_position: expected.expected_position,
       expected_city: expected.expected_city,
       salary_expectation: expected.salary_expectation || (raw.match(SALARY_RE) || [""])[0],
+      phone: structured.phone || "",
+      wechat: structured.wechat || "",
+      email: structured.email || "",
+      contact: { phone: structured.phone || "", wechat: structured.wechat || "", email: structured.email || "" },
+      companies: structured.companies || [],
+      projects: structured.projects || [],
+      styles: structured.styles || [],
+      company_keywords: structured.company_keywords || [],
+      style_keywords: structured.style_keywords || [],
       skills: source === "selected_chat_item" ? [] : skills,
       structured_resume: structured,
-      project_keywords: source === "selected_chat_item" ? [] : projectKeywords,
+      project_keywords: source === "selected_chat_item" ? [] : uniq([...projectKeywords, ...(structured.project_keywords || [])]),
       work_experiences: source === "selected_chat_item" ? [] : raw.split(/(?=\d{4}[.-]|\d+年|公司|项目|工作经历)/).map(oneLine).filter((line) => line.length > 8 && !/^\d{2}-\d{2}\s+\d{1,2}:\d{2}$/.test(line)).slice(0, 8),
       raw_text: source === "selected_chat_item" ? "" : raw.slice(0, 5000),
       source,
@@ -1159,7 +1208,13 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       for (const key of ["education", "expected_position", "expected_city", "salary_expectation", "current_title", "title", "city"]) if (!result[key] && extra[key]) result[key] = extra[key];
       if (!extra.sources_used?.includes("selected_chat_item")) {
         result.skills = uniq([...(result.skills || []), ...(extra.skills || [])]);
+        result.companies = uniq([...(result.companies || []), ...(extra.companies || [])]);
+        result.projects = uniq([...(result.projects || []), ...(extra.projects || [])]);
+        result.styles = uniq([...(result.styles || []), ...(extra.styles || [])]);
+        result.company_keywords = uniq([...(result.company_keywords || []), ...(extra.company_keywords || [])]);
+        result.style_keywords = uniq([...(result.style_keywords || []), ...(extra.style_keywords || [])]);
         result.project_keywords = uniq([...(result.project_keywords || []), ...(extra.project_keywords || [])]);
+        for (const key of ["phone", "wechat", "email"]) if (!result[key] && extra[key]) result[key] = extra[key];
         result.work_experiences = uniq([...(result.work_experiences || []), ...(extra.work_experiences || [])]).slice(0, 8);
         result.raw_text = uniq([result.raw_text || "", extra.raw_text || ""].filter(Boolean)).join("\n").slice(0, 5000);
       }
@@ -1408,6 +1463,17 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
         input_candidates: inputCandidates().slice(0, 20).map((item) => debugNode(item.el, item.score, item.reason)),
         candidate_parse_result: candidate.debug?.candidate_parse_result || pickCandidateDebug(candidate.candidate),
         candidate_completeness_debug: candidateCompletenessDebug(candidate.candidate),
+        candidate_asset_parse_debug: {
+          phone: candidate.candidate?.phone || "",
+          wechat: candidate.candidate?.wechat || "",
+          email: candidate.candidate?.email || "",
+          companies: candidate.candidate?.companies || [],
+          projects: candidate.candidate?.projects || [],
+          styles: candidate.candidate?.styles || [],
+          project_keywords: candidate.candidate?.project_keywords || [],
+          style_keywords: candidate.candidate?.style_keywords || [],
+          company_keywords: candidate.candidate?.company_keywords || [],
+        },
         resume_parse_debug: candidate.candidate?.structured_resume ? {
           candidate_name: candidate.candidate.structured_resume.candidate_name,
           industries: candidate.candidate.structured_resume.industries,

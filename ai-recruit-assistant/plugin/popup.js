@@ -223,6 +223,7 @@ async function saveCurrentJobContext(job=state.job){
     source:job.source||'', jd_complete:Boolean(job.jd_complete), updated_at:new Date().toISOString(),
   };
   state.currentJobContext=currentJobContext;
+  try { localStorage.setItem('current_job', JSON.stringify(currentJobContext)); sessionStorage.setItem('current_job', JSON.stringify(currentJobContext)); } catch {}
   await chrome.storage.local.set({currentJobContext,lastJob:currentJobContext});
   setCurrentJobContextStatus(`已缓存：${currentJobContext.title} / ${currentJobContext.source||'-'}`);
 }
@@ -230,7 +231,9 @@ async function saveJobIfAvailable(){ if(state.job?.title) await saveCurrentJobCo
 
 async function restoreCurrentJobContext({force=false}={}){
   const data=await chrome.storage.local.get(['currentJobContext','lastJob']);
-  const cached=data.currentJobContext||data.lastJob;
+  let browserCached=null;
+  try { browserCached=JSON.parse(sessionStorage.getItem('current_job') || localStorage.getItem('current_job') || 'null'); } catch {}
+  const cached=data.currentJobContext||data.lastJob||browserCached;
   if(!cached?.title) return false;
   state.currentJobContext=cached;
   setCurrentJobContextStatus(`已缓存：${cached.title} / ${cached.source||'-'}`);
@@ -373,10 +376,10 @@ async function loadCurrentJobProfile(){
 async function saveJobProfile(){
   const title=(state.job?.title||$('job-title')?.textContent||'').trim();
   if(!title){ feedback('请先刷新并识别岗位名称'); return; }
-  const description=($('job-description-manual')?.value||'').trim();
-  const responsibilities=($('job-responsibilities-manual')?.value||'').trim();
-  const requirements=($('job-requirements-manual')?.value||'').trim();
-  const preferred_keywords=splitKeywords($('job-keywords-manual')?.value||'');
+  const description=($('job-description-manual')?.value||'').trim() || state.job?.description || state.job?.raw_text || '';
+  const responsibilities=($('job-responsibilities-manual')?.value||'').trim() || linesText(state.job?.responsibilities||[]);
+  const requirements=($('job-requirements-manual')?.value||'').trim() || linesText(state.job?.requirements||[]);
+  const preferred_keywords=splitKeywords(($('job-keywords-manual')?.value||'') || (state.job?.preferred_keywords||state.job?.keywords||[]));
   if(!description && !responsibilities && !requirements){ feedback('请至少粘贴岗位描述、岗位职责或任职要求后再保存'); return; }
   try{
     const data=await api('/api/job-profile/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,city:state.job?.city||'',salary:state.job?.salary||'',experience_required:state.job?.experience_required||'',education_required:state.job?.education_required||'',description,responsibilities,requirements,preferred_keywords,raw_text:state.job?.raw_text||'',source:state.job?.source||'manual'})});
@@ -412,6 +415,7 @@ async function refreshContext(){
     state.chat=ctx.chat||{};
     state.contextId=ctx.context_id||'';
     await saveJobIfAvailable();
+    if(state.job?.title && state.job?.jd_complete && state.job?.source==='job_detail_modal') await saveJobProfile();
     renderContext();
     const warnings=[];
     const warningText=(ctx.warnings||[]).join('；');
@@ -499,6 +503,16 @@ function candidateAssetPayload(){
     current_title:c.current_title||c.title||'',
     expected_position:c.expected_position||'',
     skills:c.skills||[],
+    phone:c.phone||'',
+    wechat:c.wechat||'',
+    email:c.email||'',
+    contact:c.contact||{},
+    companies:c.companies||c.structured_resume?.companies||[],
+    projects:c.projects||c.structured_resume?.projects||[],
+    styles:c.styles||c.structured_resume?.styles||[],
+    project_keywords:c.project_keywords||c.structured_resume?.project_keywords||[],
+    style_keywords:c.style_keywords||c.structured_resume?.style_keywords||[],
+    company_keywords:c.company_keywords||c.structured_resume?.company_keywords||[],
     resume_text:c.raw_text||($('candidate-manual')?.value||''),
     resume_hash:c.resume_hash||'',
     source_url:c.source_url||state.pageContext?.url||'',
@@ -529,7 +543,7 @@ async function saveCandidateAsset({silent=false}={}){
   try{
     const data=await api('/api/candidates/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     state.candidate={...(state.candidate||{}),asset_id:data.candidate_id};
-    if(!silent) feedback('候选人已保存');
+    if(!silent) feedback('候选人已保存，联系方式/项目/公司/风格信息已同步');
     return data;
   }catch(e){ if(!silent) feedback(`保存失败：${e.message}`,'warn'); return null; }
 }

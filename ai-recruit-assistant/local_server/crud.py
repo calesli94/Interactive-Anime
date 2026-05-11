@@ -32,7 +32,7 @@ def lines_text(value: Any) -> str:
 
 def row_to_dict(row: Any) -> dict[str, Any]:
     item = dict(row)
-    for key in ["skills_json", "preferred_keywords_json"]:
+    for key in ["skills_json", "preferred_keywords_json", "contact_json", "companies_json", "projects_json", "styles_json", "project_keywords_json", "style_keywords_json", "company_keywords_json"]:
         if key in item:
             try:
                 item[key.replace("_json", "")] = json.loads(item[key] or "[]")
@@ -85,6 +85,16 @@ def save_candidate(data: CandidateSaveRequest | dict[str, Any]) -> dict[str, Any
             "resume_text": resume_text,
             "resume_hash": resume_hash,
             "source_url": payload.source_url,
+            "phone": payload.phone.strip(),
+            "wechat": payload.wechat.strip(),
+            "email": payload.email.strip(),
+            "contact_json": json_text(payload.contact or []),
+            "companies_json": json_text(payload.companies),
+            "projects_json": json_text(payload.projects),
+            "styles_json": json_text(payload.styles),
+            "project_keywords_json": json_text(payload.project_keywords),
+            "style_keywords_json": json_text(payload.style_keywords),
+            "company_keywords_json": json_text(payload.company_keywords),
             "ai_summary": payload.ai_summary,
             "embedding": payload.embedding,
             "updated_at": now,
@@ -96,7 +106,11 @@ def save_candidate(data: CandidateSaveRequest | dict[str, Any]) -> dict[str, Any
                 UPDATE candidates SET name=:name, age=:age, city=:city, education=:education,
                     experience_years=:experience_years, current_title=:current_title,
                     expected_position=:expected_position, skills_json=:skills_json, resume_text=:resume_text,
-                    resume_hash=:resume_hash, source_url=:source_url, ai_summary=:ai_summary,
+                    resume_hash=:resume_hash, source_url=:source_url, phone=:phone, wechat=:wechat,
+                    email=:email, contact_json=:contact_json, companies_json=:companies_json,
+                    projects_json=:projects_json, styles_json=:styles_json,
+                    project_keywords_json=:project_keywords_json, style_keywords_json=:style_keywords_json,
+                    company_keywords_json=:company_keywords_json, ai_summary=:ai_summary,
                     embedding=:embedding, updated_at=:updated_at
                 WHERE id=:id
                 """,
@@ -108,10 +122,13 @@ def save_candidate(data: CandidateSaveRequest | dict[str, Any]) -> dict[str, Any
             conn.execute(
                 """
                 INSERT INTO candidates (name, age, city, education, experience_years, current_title,
-                    expected_position, skills_json, resume_text, resume_hash, source_url, ai_summary,
-                    embedding, created_at, updated_at)
+                    expected_position, skills_json, resume_text, resume_hash, source_url, phone, wechat,
+                    email, contact_json, companies_json, projects_json, styles_json, project_keywords_json,
+                    style_keywords_json, company_keywords_json, ai_summary, embedding, created_at, updated_at)
                 VALUES (:name, :age, :city, :education, :experience_years, :current_title,
                     :expected_position, :skills_json, :resume_text, :resume_hash, :source_url,
+                    :phone, :wechat, :email, :contact_json, :companies_json, :projects_json,
+                    :styles_json, :project_keywords_json, :style_keywords_json, :company_keywords_json,
                     :ai_summary, :embedding, :created_at, :updated_at)
                 """,
                 {**normalized, "created_at": now},
@@ -250,17 +267,24 @@ def list_candidates() -> list[dict[str, Any]]:
 
 def search_candidates(q: str) -> list[dict[str, Any]]:
     init_recruitment_db()
-    like = f"%{q.strip()}%"
+    query = q.strip()
+    like = f"%{query}%"
     conn = get_db_connection()
     try:
+        if query in {"微信", "微信号", "wechat", "wx"}:
+            rows = conn.execute("SELECT * FROM candidates WHERE COALESCE(wechat, '') != '' ORDER BY updated_at DESC LIMIT 100").fetchall()
+            return [row_to_dict(row) for row in rows]
         rows = conn.execute(
             """
             SELECT * FROM candidates
-            WHERE name LIKE ? OR current_title LIKE ? OR expected_position LIKE ?
-               OR education LIKE ? OR skills_json LIKE ? OR resume_text LIKE ?
+            WHERE name LIKE ? OR phone LIKE ? OR wechat LIKE ? OR email LIKE ?
+               OR current_title LIKE ? OR expected_position LIKE ? OR education LIKE ?
+               OR skills_json LIKE ? OR companies_json LIKE ? OR projects_json LIKE ?
+               OR styles_json LIKE ? OR project_keywords_json LIKE ? OR style_keywords_json LIKE ?
+               OR company_keywords_json LIKE ? OR resume_text LIKE ?
             ORDER BY updated_at DESC LIMIT 100
             """,
-            (like, like, like, like, like, like),
+            (like, like, like, like, like, like, like, like, like, like, like, like, like, like, like),
         ).fetchall()
         return [row_to_dict(row) for row in rows]
     finally:

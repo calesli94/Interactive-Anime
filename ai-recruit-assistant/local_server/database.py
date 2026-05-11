@@ -31,6 +31,16 @@ def init_recruitment_db() -> Path:
                 resume_text TEXT,
                 resume_hash TEXT,
                 source_url TEXT,
+                phone TEXT,
+                wechat TEXT,
+                email TEXT,
+                contact_json TEXT,
+                companies_json TEXT,
+                projects_json TEXT,
+                styles_json TEXT,
+                project_keywords_json TEXT,
+                style_keywords_json TEXT,
+                company_keywords_json TEXT,
                 ai_summary TEXT,
                 embedding TEXT,
                 created_at TEXT NOT NULL,
@@ -88,6 +98,22 @@ def init_recruitment_db() -> Path:
             CREATE INDEX IF NOT EXISTS idx_chat_logs_candidate_job ON chat_logs(candidate_id, job_id);
             """
         )
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(candidates)").fetchall()}
+        candidate_columns = {
+            "phone": "TEXT",
+            "wechat": "TEXT",
+            "email": "TEXT",
+            "contact_json": "TEXT",
+            "companies_json": "TEXT",
+            "projects_json": "TEXT",
+            "styles_json": "TEXT",
+            "project_keywords_json": "TEXT",
+            "style_keywords_json": "TEXT",
+            "company_keywords_json": "TEXT",
+        }
+        for column, column_type in candidate_columns.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE candidates ADD COLUMN {column} {column_type}")
         conn.commit()
     finally:
         conn.close()

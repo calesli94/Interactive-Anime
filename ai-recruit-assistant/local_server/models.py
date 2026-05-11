@@ -17,6 +17,16 @@ class CandidateSaveRequest(BaseModel):
     raw_text: str = ""
     resume_hash: str = ""
     source_url: str = ""
+    phone: str = ""
+    wechat: str = ""
+    email: str = ""
+    contact: dict[str, Any] | list[Any] | str | None = None
+    companies: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+    styles: list[str] = Field(default_factory=list)
+    project_keywords: list[str] = Field(default_factory=list)
+    style_keywords: list[str] = Field(default_factory=list)
+    company_keywords: list[str] = Field(default_factory=list)
     ai_summary: str = ""
     embedding: str = ""
 

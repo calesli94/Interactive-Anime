@@ -68,6 +68,33 @@ def home_page() -> str:
     """
 
 
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page() -> str:
+    return """
+    <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>招聘资产工作台</title>
+    <style>
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f7fb;margin:0;padding:24px;color:#1f2937} h1{margin:0 0 16px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 10px #0001;margin-bottom:16px}.toolbar{display:flex;gap:8px;margin:12px 0}input{flex:1;padding:9px;border:1px solid #ddd;border-radius:8px}button{padding:9px 12px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}table{width:100%;border-collapse:collapse;background:#fff}th,td{border-bottom:1px solid #eee;padding:8px;text-align:left;vertical-align:top}tr:hover{background:#f9fafb}.chips{max-height:30px;overflow:hidden}.chips:hover{max-height:240px}.chip{display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:2px 8px;margin:2px;font-size:12px}.muted{color:#6b7280;font-size:12px}
+    </style></head><body><h1>本地AI招聘工作台</h1>
+    <div class="grid"><div class="card">候选人<br><b id="candidate-count">0</b></div><div class="card">岗位<br><b id="job-count">0</b></div><div class="card">匹配<br><b id="match-count">0</b></div><div class="card">今日分析<br><b id="today-count">0</b></div></div>
+    <div class="card"><h2>搜索候选人</h2><div class="toolbar"><input id="q" placeholder="搜索姓名/电话/微信/邮箱/公司/项目/风格，如 网易、SLG、二次元、微信"><button onclick="searchCandidates()">搜索</button><button onclick="loadAll()">刷新数据</button></div></div>
+    <div class="card"><h2>候选人列表</h2><div id="candidates"></div></div>
+    <div class="card"><h2>岗位列表</h2><div id="jobs"></div></div>
+    <div class="card"><h2>匹配记录</h2><div id="matches"></div></div>
+    <script>
+      const chip=(v)=>Array.isArray(v)?'<div class="chips">'+v.filter(Boolean).map(x=>`<span class="chip">${x}</span>`).join('')+'</div>':(v||'-');
+      const esc=(v)=>String(v??'').replace(/[&<>]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]));
+      async function getJson(path){const r=await fetch(path); return await r.json();}
+      function renderCandidates(items){document.getElementById('candidate-count').textContent=items.length;document.getElementById('candidates').innerHTML='<table><thead><tr><th>基础信息</th><th>联系方式</th><th>技能</th><th>风格</th><th>项目关键词</th><th>过往公司</th><th>更新</th></tr></thead><tbody>'+items.map(c=>`<tr><td><b>${esc(c.name)}</b><br>${esc(c.age||'-')} / ${esc(c.city||'-')} / ${esc(c.education||'-')} / ${esc(c.experience_years??'-')}年<br><span class="muted">${esc(c.current_title||'-')} → ${esc(c.expected_position||'-')}</span></td><td>电话:${esc(c.phone||'-')}<br>微信:${esc(c.wechat||'-')}<br>邮箱:${esc(c.email||'-')}</td><td>${chip(c.skills)}</td><td>${chip(c.styles)}</td><td>${chip(c.project_keywords)}</td><td>${chip(c.companies)}</td><td>${esc(c.updated_at||'')}</td></tr>`).join('')+'</tbody></table>';}
+      function renderJobs(items){document.getElementById('job-count').textContent=items.length;document.getElementById('jobs').innerHTML='<table><thead><tr><th>岗位</th><th>城市/薪资</th><th>要求</th><th>关键词</th></tr></thead><tbody>'+items.map(j=>`<tr><td><b>${esc(j.job_title)}</b></td><td>${esc(j.city||'-')} / ${esc(j.salary||'-')}</td><td>${esc(j.education_required||'-')} / ${esc(j.experience_required||'-')}</td><td>${chip(j.preferred_keywords)}</td></tr>`).join('')+'</tbody></table>';}
+      function renderMatches(items){document.getElementById('match-count').textContent=items.length;document.getElementById('matches').innerHTML='<table><thead><tr><th>候选人</th><th>岗位</th><th>分数</th><th>建议</th></tr></thead><tbody>'+items.map(m=>`<tr><td>${esc(m.candidate_name||m.candidate_id)}</td><td>${esc(m.job_title||m.job_id)}</td><td>${esc(m.match_score??'-')} / ${esc(m.match_level||'-')}</td><td>${esc(m.recommended_action||m.match_reason||'')}</td></tr>`).join('')+'</tbody></table>';}
+      async function loadAll(){const [c,j,m,s]=await Promise.all([getJson('/api/candidates'),getJson('/api/jobs'),getJson('/api/matches'),getJson('/api/stats/today').catch(()=>({}))]);renderCandidates(c);renderJobs(j);renderMatches(m);document.getElementById('today-count').textContent=s.today_analyzed||0;}
+      async function searchCandidates(){const q=encodeURIComponent(document.getElementById('q').value);renderCandidates(await getJson('/api/candidates/search?q='+q));}
+      loadAll();
+    </script></body></html>
+    """
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page() -> str:
     m = get_mode_config()
