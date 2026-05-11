@@ -332,6 +332,46 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     };
   }
 
+  function candidateCompletenessDebug(candidate) {
+    const raw = candidate?.raw_text || "";
+    const skills = Array.isArray(candidate?.skills) ? candidate.skills : [];
+    const hasName = Boolean(candidate?.name);
+    const hasAge = Boolean(candidate?.age);
+    const hasExperience = Boolean(candidate?.experience_years || candidate?.experience_years_text);
+    const hasEducation = Boolean(candidate?.education);
+    const hasWorkExperienceText = /工作经历/.test(raw);
+    const hasCompanyExperience = /(?:公司|有限公司|科技|网络|互动|互娱|游戏|信息技术|文化传媒|工作经历|任职|负责)/.test(raw) || (candidate?.work_experiences || []).length > 0;
+    const careerChecks = [
+      Boolean(candidate?.current_title),
+      Boolean(candidate?.expected_position),
+      skills.length >= 2,
+      hasWorkExperienceText,
+      hasCompanyExperience,
+      raw.length > 300,
+    ];
+    const careerCount = careerChecks.filter(Boolean).length;
+    const missingFields = [];
+    if (!hasName) missingFields.push("name");
+    if (!hasAge) missingFields.push("age");
+    if (!hasExperience) missingFields.push("experience");
+    if (!hasEducation) missingFields.push("education");
+    if (careerCount < 2) missingFields.push("career_info_at_least_two");
+    const profileComplete = hasName && hasAge && hasExperience && hasEducation && careerCount >= 2;
+    return {
+      profile_complete: profileComplete,
+      confidence: candidate?.confidence || 0,
+      has_name: hasName,
+      has_age: hasAge,
+      has_experience: hasExperience,
+      has_education: hasEducation,
+      skills_count: skills.length,
+      raw_text_length: raw.length,
+      has_work_experience_text: hasWorkExperienceText,
+      completeness_reason: profileComplete ? `基础信息完整，职业信息命中 ${careerCount}/6 项` : `缺少字段或职业信息不足，仅命中 ${careerCount}/6 项`,
+      missing_fields: missingFields,
+    };
+  }
+
   function pickCandidateDebug(candidate) {
     return {
       name: candidate?.name || "",
@@ -340,6 +380,9 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       experience_years_text: candidate?.experience_years_text || "",
       education: candidate?.education || "",
       source: candidate?.source || "",
+      profile_complete: Boolean(candidate?.profile_complete),
+      confidence: candidate?.confidence || 0,
+      candidate_completeness_debug: candidateCompletenessDebug(candidate),
     };
   }
 
@@ -645,7 +688,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
 
   function profilePanelCandidates() {
     const nodes = [];
-    for (const node of queryVisible([".resume-detail", ".geek-detail", ".candidate-detail", ".profile", "[class*='resume']", "[class*='geek']", "[class*='candidate']", "aside", "main", "section", "article", "div"])) {
+    for (const node of queryVisible([".resume-detail", ".geek-detail", ".candidate-detail", ".profile", ".base-info-single-container", ".base-info-single-main", ".base-info-single-top", ".experience-content", ".detail-list", "[class*='resume']", "[class*='geek']", "[class*='candidate']", "[class*='base-info-single']", "[class*='experience-content']", "[class*='detail-list']", "aside", "main", "section", "article", "div"])) {
       const text = textOf(node);
       if (text.length < 60 || text.length > 8000 || isNavLike(text, node) || isChatListOrNavigationElement(node)) continue;
       const scored = profilePanelScore(node);
@@ -684,8 +727,8 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   function candidateHeaderCandidates(root = document) {
     const nodes = [];
     const selectors = [
-      ".base-info-single-top", ".base-info-single-top-detail", ".base-info-single-detial",
-      "[class*='base-info-single-top']", "[class*='base-info-single-detail']", "[class*='base-info-single-detial']",
+      ".base-info-single-container", ".base-info-single-main", ".base-info-single-top", ".base-info-single-top-detail", ".base-info-single-detial",
+      "[class*='base-info-single-container']", "[class*='base-info-single-main']", "[class*='base-info-single-top']", "[class*='base-info-single-detail']", "[class*='base-info-single-detial']",
       ".resume-header", ".candidate-header", ".geek-header", ".chat-header", ".conversation-header",
       "[class*='resume-header']", "[class*='candidate-header']", "[class*='geek-header']", "[class*='chat-header']", "[class*='conversation-header']",
       "header", "h1", "h2", "div",
@@ -872,26 +915,44 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   }
 
   function visibleTextFallback() {
-    return { skills: [], project_keywords: [], raw_text: "" };
+    const raw = cleanText(textOf(document.body)).slice(0, 5000);
+    if (!/期望职位|工作经历|教育经历|项目经历|技能/.test(raw)) return { skills: [], project_keywords: [], raw_text: "" };
+    const structured = parseResumeStructured(raw);
+    return {
+      skills: structured.skills || [],
+      project_keywords: uniq([...(structured.industries || []), ...(structured.recruiting_domains || []), ...(structured.roles || []), ...(structured.companies || [])]),
+      raw_text: raw,
+    };
   }
 
   function completeAndScore(candidate) {
-    const basicsCount = [candidate.age, candidate.experience_years, candidate.education].filter(Boolean).length;
-    const complete = Boolean(candidate.name && basicsCount >= 2 && /期望职位|工作经历/.test(candidate.raw_text || ""));
     let confidence = 0;
     if (candidate.sources_used.includes("candidate_header")) confidence += 45;
     if (candidate.sources_used.includes("resume_modal")) confidence += 40;
     if (candidate.sources_used.includes("profile_panel")) confidence += 30;
+    if (candidate.sources_used.includes("active_chat_profile")) confidence += 30;
+    if (candidate.sources_used.includes("visible_text_fallback")) confidence += 15;
     if (candidate.sources_used.includes("chat_header")) confidence += 20;
     if (candidate.sources_used.includes("selected_chat_item")) confidence += 10;
     if (candidate.name) confidence += 20;
     if (candidate.age) confidence += 5;
-    if (candidate.experience_years) confidence += 5;
+    if (candidate.experience_years || candidate.experience_years_text) confidence += 5;
     if (candidate.education) confidence += 5;
-    if (candidate.skills.length) confidence += 10;
-    candidate.profile_complete = complete;
+    if ((candidate.skills || []).length >= 2) confidence += 10;
+    if (/工作经历/.test(candidate.raw_text || "")) confidence += 10;
+    if ((candidate.raw_text || "").length > 300) confidence += 10;
+
     candidate.confidence = candidate.sources_used.length === 1 && candidate.sources_used.includes("selected_chat_item") ? Math.min(40, confidence) : Math.min(100, confidence);
-    if (!complete && candidate.name && !candidate.warnings.includes("当前候选人信息不完整，请打开在线简历后再分析")) candidate.warnings.push("当前候选人信息不完整，请打开在线简历后再分析");
+    const completeness = candidateCompletenessDebug(candidate);
+    candidate.profile_complete = completeness.profile_complete;
+    candidate.completeness_reason = completeness.completeness_reason;
+    candidate.missing_fields = completeness.missing_fields;
+    if (candidate.profile_complete) {
+      candidate.confidence = Math.max(80, candidate.confidence);
+      candidate.warnings = (candidate.warnings || []).filter((warning) => !/候选人信息不完整|打开在线简历后再分析|建议打开在线简历/.test(warning));
+    } else if (candidate.name && !candidate.warnings.includes("当前候选人信息不完整，请打开在线简历后再分析")) {
+      candidate.warnings.push("当前候选人信息不完整，请打开在线简历后再分析");
+    }
     return candidate;
   }
 
@@ -906,6 +967,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
         result.skills = uniq([...(result.skills || []), ...(extra.skills || [])]);
         result.project_keywords = uniq([...(result.project_keywords || []), ...(extra.project_keywords || [])]);
         result.work_experiences = uniq([...(result.work_experiences || []), ...(extra.work_experiences || [])]).slice(0, 8);
+        result.raw_text = uniq([result.raw_text || "", extra.raw_text || ""].filter(Boolean)).join("\n").slice(0, 5000);
       }
       result.warnings = uniq([...(result.warnings || []), ...(extra.warnings || [])]);
     }
@@ -954,6 +1016,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       const candidate = mergeCandidate(primary, sources.filter((item) => item !== primary));
       candidate.skills = uniq([...candidate.skills, ...fallback.skills]);
       candidate.project_keywords = uniq([...candidate.project_keywords, ...fallback.project_keywords]);
+      if (fallback.raw_text) candidate.raw_text = uniq([candidate.raw_text || "", fallback.raw_text].filter(Boolean)).join("\n").slice(0, 5000);
       if (fallback.raw_text && !candidate.sources_used.includes("visible_text_fallback")) candidate.sources_used.push("visible_text_fallback");
       completeAndScore(candidate);
       debug.candidate_parse_result = pickCandidateDebug(candidate);
@@ -1150,6 +1213,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
         chat_message_candidates: chatMessageCandidates().slice(0, 20).map((item) => debugNode(item.node, item.score, item.reason)),
         input_candidates: inputCandidates().slice(0, 20).map((item) => debugNode(item.el, item.score, item.reason)),
         candidate_parse_result: candidate.debug?.candidate_parse_result || pickCandidateDebug(candidate.candidate),
+        candidate_completeness_debug: candidateCompletenessDebug(candidate.candidate),
         resume_parse_debug: candidate.candidate?.structured_resume ? {
           candidate_name: candidate.candidate.structured_resume.candidate_name,
           industries: candidate.candidate.structured_resume.industries,
