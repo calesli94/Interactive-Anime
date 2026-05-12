@@ -38,6 +38,21 @@ def row_to_dict(row: Any) -> dict[str, Any]:
                 item[key.replace("_json", "")] = json.loads(item[key] or "[]")
             except json.JSONDecodeError:
                 item[key.replace("_json", "")] = []
+    for key in ["matched_json", "missing_json", "risks_json"]:
+        if key in item:
+            output_key = key.replace("_json", "")
+            try:
+                item[output_key] = json.loads(item[key] or "[]")
+            except json.JSONDecodeError:
+                item[output_key] = []
+    if "score" in item and item.get("score") is None:
+        item["score"] = item.get("match_score")
+    if "level" in item and not item.get("level"):
+        item["level"] = item.get("match_level")
+    if "recommendation" in item and not item.get("recommendation"):
+        item["recommendation"] = item.get("recommended_action")
+    if "reasoning_text" in item and item.get("reasoning_text") is None:
+        item["reasoning_text"] = item.get("match_reason")
     return item
 
 
@@ -232,20 +247,27 @@ def save_match(data: MatchSaveRequest | dict[str, Any]) -> dict[str, Any]:
         job_id = save_job(payload.job)["job_id"]
     if not candidate_id or not job_id:
         raise ValueError("匹配记录数据不完整")
-    match_reason = payload.match_reason or "；".join(payload.reasons)
-    risk_notes = payload.risk_notes or "；".join(payload.risk_points)
+    match_reason = payload.match_reason or payload.reasoning or "；".join(payload.reasons) or "；".join(payload.matched)
+    risk_notes = payload.risk_notes or "；".join(payload.risk_points) or "；".join(payload.risks)
     match_score = payload.match_score if payload.match_score is not None else payload.score
     match_level = payload.match_level or payload.level
+    recommendation = payload.recommendation or payload.recommended_action
     now = now_iso()
     conn = get_db_connection()
     try:
         conn.execute(
             """
             INSERT INTO matches (candidate_id, job_id, match_score, match_level, match_reason,
-                risk_notes, recommended_action, ai_analysis, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                risk_notes, recommended_action, ai_analysis, score, level, recommendation,
+                matched_json, missing_json, risks_json, reasoning_text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (candidate_id, job_id, match_score, match_level, match_reason, risk_notes, payload.recommended_action, payload.ai_analysis, now),
+            (
+                candidate_id, job_id, match_score, match_level, match_reason, risk_notes,
+                recommendation, payload.ai_analysis, match_score, match_level, recommendation,
+                json_text(payload.matched), json_text(payload.missing), json_text(payload.risks),
+                payload.reasoning or match_reason, now,
+            ),
         )
         match_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
         conn.commit()
@@ -315,5 +337,58 @@ def list_matches() -> list[dict[str, Any]]:
             """
         ).fetchall()
         return [row_to_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_candidate(candidate_id: int) -> dict[str, Any] | None:
+    init_recruitment_db()
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,)).fetchone()
+        return row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_job(job_id: int) -> dict[str, Any] | None:
+    init_recruitment_db()
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def save_rule_match(candidate_id: int, job_id: int, analysis: dict[str, Any]) -> dict[str, Any]:
+    init_recruitment_db()
+    now = now_iso()
+    score = analysis.get("score")
+    level = analysis.get("level", "")
+    recommendation = analysis.get("recommendation", "")
+    matched = analysis.get("matched") or []
+    missing = analysis.get("missing") or []
+    risks = analysis.get("risks") or []
+    reasoning = analysis.get("reasoning", "")
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO matches (candidate_id, job_id, match_score, match_level, match_reason,
+                risk_notes, recommended_action, ai_analysis, score, level, recommendation,
+                matched_json, missing_json, risks_json, reasoning_text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate_id, job_id, score, level, reasoning, "；".join(risks), recommendation,
+                "rules_v1", score, level, recommendation, json_text(matched), json_text(missing),
+                json_text(risks), reasoning, now,
+            ),
+        )
+        match_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        conn.commit()
+        row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+        return {"status": "ok", "match": row_to_dict(row), "match_id": match_id}
     finally:
         conn.close()

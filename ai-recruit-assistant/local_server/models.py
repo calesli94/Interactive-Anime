@@ -49,6 +49,11 @@ class JobSaveRequest(BaseModel):
     embedding: str = ""
 
 
+class MatchAnalyzeRequest(BaseModel):
+    candidate_id: int
+    job_id: int
+
+
 class MatchSaveRequest(BaseModel):
     candidate_id: int | None = None
     job_id: int | None = None
@@ -63,6 +68,11 @@ class MatchSaveRequest(BaseModel):
     risk_notes: str = ""
     risk_points: list[str] = Field(default_factory=list)
     recommended_action: str = ""
+    recommendation: str = ""
+    matched: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    reasoning: str = ""
     ai_analysis: str = ""
 
 

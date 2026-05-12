@@ -567,10 +567,54 @@ async function saveMatchAsset({silent=false}={}){
   const job_id=jobSaved?.job_id;
   if(!candidate_id || !job_id){ if(!silent) feedback('数据不完整','warn'); return null; }
   try{
-    const data=await api('/api/matches/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate_id,job_id,score:state.priorityResult.score,level:state.priorityResult.level,match_reason:(state.priorityResult.reasons||[]).join('；'),risk_notes:(state.priorityResult.risk_points||[]).join('；'),recommended_action:state.priorityResult.recommended_action||'',ai_analysis:state.priorityResult.fit_result||''})});
+    const data=await api('/api/matches/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate_id,job_id,score:state.priorityResult.score,level:state.priorityResult.level,match_reason:(state.priorityResult.reasons||[]).join('；'),risk_notes:(state.priorityResult.risk_points||[]).join('；'),recommended_action:state.priorityResult.recommended_action||'',recommendation:state.priorityResult.recommended_action||'',matched:state.priorityResult.matched_points||[],missing:state.priorityResult.missing_points||[],risks:state.priorityResult.risk_points||[],reasoning:(state.priorityResult.reasons||[]).join('；'),ai_analysis:state.priorityResult.fit_result||''})});
     if(!silent) feedback('匹配记录已保存');
     return data;
   }catch(e){ if(!silent) feedback(`保存失败：${e.message}`,'warn'); return null; }
+}
+
+async function analyzeRuleMatch(){
+  feedback('正在执行规则匹配分析...');
+  if(!state.serviceOnline) return feedback('本地服务未启动');
+  if(!state.pageContext) await refreshContext();
+  manualCandidateIfNeeded();
+  if(!state.candidate?.name){ feedback('未识别候选人姓名，请先刷新上下文或粘贴候选人信息','warn'); return; }
+  if(!state.job?.title){ feedback('未识别岗位信息，请先刷新岗位或保存岗位要求库','warn'); return; }
+  const candidateSaved=state.candidate?.asset_id?{candidate_id:state.candidate.asset_id}:await saveCandidateAsset({silent:true});
+  const jobSaved=state.job?.asset_id?{job_id:state.job.asset_id}:await saveJobAsset({silent:true});
+  const candidate_id=candidateSaved?.candidate_id;
+  const job_id=jobSaved?.job_id;
+  if(!candidate_id || !job_id){ feedback('候选人或岗位保存失败，无法分析匹配','warn'); return; }
+  try{
+    const data=await api('/api/match/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate_id,job_id})});
+    state.ruleMatchResult=data;
+    state.priorityResult={
+      ...(state.priorityResult||{}),
+      score:data.score,
+      level:data.level,
+      recommended_action:data.recommendation,
+      reasons:[data.reasoning].filter(Boolean),
+      matched_points:data.matched||[],
+      missing_points:data.missing||[],
+      risk_points:data.risks||[],
+      reliability:'rules_v1',
+    };
+    $('match-rate').textContent=`${data.score}%`;
+    $('candidate-level').textContent=textOrDash(data.level);
+    $('candidate-priority').textContent='规则匹配';
+    $('recommended-action').textContent=textOrDash(data.recommendation);
+    $('recommended-mode').textContent='manual';
+    $('recommended-reason').textContent=textOrDash(data.reasoning);
+    $('fit-result').textContent='规则匹配V1';
+    $('message-intent').textContent='-';
+    $('matched-points').textContent=(data.matched||[]).join('；')||'-';
+    $('missing-points').textContent=(data.missing||[]).join('；')||'-';
+    $('risk-points').textContent=(data.risks||[]).join('；')||'-';
+    $('score-reliability').textContent='rules_v1';
+    feedback(`规则匹配完成：${data.score} / ${data.level} / ${data.recommendation}`);
+  }catch(e){
+    feedback(`规则匹配失败：${e.message}`,'warn');
+  }
 }
 
 async function viewMatchHistory(){
@@ -580,7 +624,7 @@ async function viewMatchHistory(){
     const box=$('match-history-list');
     if(box){
       const items=(Array.isArray(data)?data:(data.items||[])).slice(0,5);
-      box.innerHTML=items.length?items.map((item)=>`<div class="reply-box"><b>${item.candidate_name||'-'}</b> × <b>${item.job_title||'-'}</b><br>分数：${item.match_score??'-'} / ${item.match_level||'-'}<br>${item.recommended_action||''}</div>`).join(''):'暂无历史匹配';
+      box.innerHTML=items.length?items.map((item)=>`<div class="reply-box"><b>${item.candidate_name||'-'}</b> × <b>${item.job_title||'-'}</b><br>分数：${item.score??item.match_score??'-'} / ${item.level||item.match_level||'-'}<br>推荐：${item.recommendation||item.recommended_action||''}<br>匹配：${(item.matched||[]).join('；')||'-'}<br>缺失：${(item.missing||[]).join('；')||'-'}<br>风险：${(item.risks||[]).join('；')||'-'}</div>`).join(''):'暂无历史匹配';
     }
     feedback(state.priorityResult?'匹配记录已保存':'历史匹配已加载');
   }catch(e){ feedback(`保存失败：${e.message}`,'warn'); }
@@ -767,6 +811,7 @@ function bind(){
   $('debug-dom-btn').onclick=debugDom;
   $('refresh-job-btn').onclick=refreshJob;
   $('analyze-btn').onclick=analyzeCandidate;
+  const ruleMatchBtn=$('rule-match-btn'); if(ruleMatchBtn) ruleMatchBtn.onclick=analyzeRuleMatch;
   $('generate-message-btn').onclick=generateMessages;
   $('save-job-config-btn').onclick=saveJobProfile;
   const saveCandidateAssetBtn=$('save-candidate-asset-btn'); if(saveCandidateAssetBtn) saveCandidateAssetBtn.onclick=()=>saveCandidateAsset();

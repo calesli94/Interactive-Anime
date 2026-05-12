@@ -11,11 +11,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from config import settings
 from db import get_connection, init_db
 from database import init_recruitment_db
+from crud import get_candidate, get_job, save_rule_match
+from models import MatchAnalyzeRequest
 from routes import assert_asset_routes_registered
 from routes.candidates import router as candidates_router
 from routes.jobs import router as jobs_router
 from routes.matches import router as matches_router
 from services.message_service import generate_messages
+from services.match_engine import analyze_match
 from services.mode_service import GreetingModeConfig, get_mode_config, init_mode_table, save_mode_config
 from services.priority_service import AnalyzeRequest, analyze_priority
 from services.stats_service import get_today_stats, init_stats_table, log_event
@@ -82,18 +85,37 @@ def dashboard_page() -> str:
     <div class="card"><h2>岗位列表</h2><div id="jobs"></div></div>
     <div class="card"><h2>匹配记录</h2><div id="matches"></div></div>
     <script>
-      const chip=(v)=>Array.isArray(v)?'<div class="chips">'+v.filter(Boolean).map(x=>`<span class="chip">${x}</span>`).join('')+'</div>':(v||'-');
+      const chip=(v)=>Array.isArray(v)?'<div class="chips">'+v.filter(Boolean).map(x=>`<span class="chip">${esc(x)}</span>`).join('')+'</div>':esc(v||'-');
       const esc=(v)=>String(v??'').replace(/[&<>]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]));
       async function getJson(path){const r=await fetch(path); return await r.json();}
       function renderCandidates(items){document.getElementById('candidate-count').textContent=items.length;document.getElementById('candidates').innerHTML='<table><thead><tr><th>基础信息</th><th>联系方式</th><th>技能</th><th>风格</th><th>项目关键词</th><th>过往公司</th><th>更新</th></tr></thead><tbody>'+items.map(c=>`<tr><td><b>${esc(c.name)}</b><br>${esc(c.age||'-')} / ${esc(c.city||'-')} / ${esc(c.education||'-')} / ${esc(c.experience_years??'-')}年<br><span class="muted">${esc(c.current_title||'-')} → ${esc(c.expected_position||'-')}</span></td><td>电话:${esc(c.phone||'-')}<br>微信:${esc(c.wechat||'-')}<br>邮箱:${esc(c.email||'-')}</td><td>${chip(c.skills)}</td><td>${chip(c.styles)}</td><td>${chip(c.project_keywords)}</td><td>${chip(c.companies)}</td><td>${esc(c.updated_at||'')}</td></tr>`).join('')+'</tbody></table>';}
       function renderJobs(items){document.getElementById('job-count').textContent=items.length;document.getElementById('jobs').innerHTML='<table><thead><tr><th>岗位</th><th>城市/薪资</th><th>要求</th><th>关键词</th></tr></thead><tbody>'+items.map(j=>`<tr><td><b>${esc(j.job_title)}</b></td><td>${esc(j.city||'-')} / ${esc(j.salary||'-')}</td><td>${esc(j.education_required||'-')} / ${esc(j.experience_required||'-')}</td><td>${chip(j.preferred_keywords)}</td></tr>`).join('')+'</tbody></table>';}
-      function renderMatches(items){document.getElementById('match-count').textContent=items.length;document.getElementById('matches').innerHTML='<table><thead><tr><th>候选人</th><th>岗位</th><th>分数</th><th>建议</th></tr></thead><tbody>'+items.map(m=>`<tr><td>${esc(m.candidate_name||m.candidate_id)}</td><td>${esc(m.job_title||m.job_id)}</td><td>${esc(m.match_score??'-')} / ${esc(m.match_level||'-')}</td><td>${esc(m.recommended_action||m.match_reason||'')}</td></tr>`).join('')+'</tbody></table>';}
+      function renderMatches(items){document.getElementById('match-count').textContent=items.length;document.getElementById('matches').innerHTML='<table><thead><tr><th>候选人</th><th>岗位</th><th>分数/等级</th><th>推荐</th><th>匹配项</th><th>缺失项</th><th>风险项</th></tr></thead><tbody>'+items.map(m=>`<tr><td>${esc(m.candidate_name||m.candidate_id)}</td><td>${esc(m.job_title||m.job_id)}</td><td>${esc(m.score??m.match_score??'-')} / ${esc(m.level||m.match_level||'-')}</td><td>${esc(m.recommendation||m.recommended_action||'')}</td><td>${chip(m.matched)}</td><td>${chip(m.missing)}</td><td>${chip(m.risks)}</td></tr>`).join('')+'</tbody></table>';}
       async function loadAll(){const [c,j,m,s]=await Promise.all([getJson('/api/candidates'),getJson('/api/jobs'),getJson('/api/matches'),getJson('/api/stats/today').catch(()=>({}))]);renderCandidates(c);renderJobs(j);renderMatches(m);document.getElementById('today-count').textContent=s.today_analyzed||0;}
       async function searchCandidates(){const q=encodeURIComponent(document.getElementById('q').value);renderCandidates(await getJson('/api/candidates/search?q='+q));}
       loadAll();
     </script></body></html>
     """
 
+
+
+
+@app.post("/api/match/analyze")
+def rule_match_analyze(payload: MatchAnalyzeRequest) -> dict:
+    candidate = get_candidate(payload.candidate_id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="候选人不存在")
+    job = get_job(payload.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+    analysis = analyze_match(candidate, job)
+    saved = save_rule_match(payload.candidate_id, payload.job_id, analysis)
+    return {
+        **analysis,
+        "candidate_id": payload.candidate_id,
+        "job_id": payload.job_id,
+        "match_id": saved["match_id"],
+    }
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page() -> str:

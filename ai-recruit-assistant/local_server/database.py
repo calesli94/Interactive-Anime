@@ -79,6 +79,13 @@ def init_recruitment_db() -> Path:
                 risk_notes TEXT,
                 recommended_action TEXT,
                 ai_analysis TEXT,
+                score REAL,
+                level TEXT,
+                recommendation TEXT,
+                matched_json TEXT,
+                missing_json TEXT,
+                risks_json TEXT,
+                reasoning_text TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(candidate_id) REFERENCES candidates(id),
                 FOREIGN KEY(job_id) REFERENCES jobs(id)
@@ -114,6 +121,19 @@ def init_recruitment_db() -> Path:
         for column, column_type in candidate_columns.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE candidates ADD COLUMN {column} {column_type}")
+        existing_matches = {row[1] for row in conn.execute("PRAGMA table_info(matches)").fetchall()}
+        match_columns = {
+            "score": "REAL",
+            "level": "TEXT",
+            "recommendation": "TEXT",
+            "matched_json": "TEXT",
+            "missing_json": "TEXT",
+            "risks_json": "TEXT",
+            "reasoning_text": "TEXT",
+        }
+        for column, column_type in match_columns.items():
+            if column not in existing_matches:
+                conn.execute(f"ALTER TABLE matches ADD COLUMN {column} {column_type}")
         conn.commit()
     finally:
         conn.close()
