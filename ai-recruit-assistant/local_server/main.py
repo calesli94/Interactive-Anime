@@ -100,6 +100,15 @@ def dashboard_page() -> str:
 
 
 
+@app.post("/api/match/quick")
+def rule_match_quick(payload: dict) -> dict:
+    candidate = (payload or {}).get("candidate") or {}
+    job = (payload or {}).get("job") or {}
+    if not isinstance(candidate, dict) or not isinstance(job, dict):
+        raise HTTPException(status_code=400, detail="candidate/job 必须是对象")
+    return analyze_match(candidate, job)
+
+
 @app.post("/api/match/analyze")
 def rule_match_analyze(payload: MatchAnalyzeRequest) -> dict:
     candidate = get_candidate(payload.candidate_id)

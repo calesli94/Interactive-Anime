@@ -1321,9 +1321,182 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     }
   }
 
+
+  function detectCandidateListPageType() {
+    const href = location.href;
+    const body = textOf(document.body).slice(0, 12000);
+    if (/推荐牛人/.test(href) || /推荐牛人/.test(body)) return "recommend_page";
+    if (/深度搜索|推荐列表|搜索/.test(href) || /深度搜索|推荐列表/.test(body)) return "search_page";
+    if (/search|geek|candidate|recommend/i.test(href) && /搜索|牛人|候选人/.test(body)) return "search_page";
+    if (/搜索结果|搜索牛人|搜索候选人/.test(body)) return "search_page";
+    if (/搜索/.test(body) && /牛人|候选人|\d{2}\s*岁|学历|经验/.test(body)) return "search_page";
+    return "";
+  }
+
+  function isInViewport(node) {
+    const rect = node?.getBoundingClientRect?.();
+    if (!rect) return false;
+    const viewH = window.innerHeight || document.documentElement.clientHeight || 0;
+    const viewW = window.innerWidth || document.documentElement.clientWidth || 0;
+    return rect.bottom > 0 && rect.right > 0 && rect.top < viewH && rect.left < viewW;
+  }
+
+  function candidateListCardScore(node) {
+    const text = textOf(node);
+    const one = oneLine(text);
+    const rect = node.getBoundingClientRect();
+    const cls = `${node.className || ""} ${node.id || ""}`.toLowerCase();
+    const reasons = [];
+    let score = 0;
+    if (!one || one.length < 18 || one.length > 1600) return { score: -100, reason: "文本长度不符合候选人卡片" };
+    if (!isInViewport(node)) return { score: -100, reason: "不在当前可视区域" };
+    const listLikeClass = /candidate|geek|card|recommend|search|resume|user|name/.test(cls);
+    if (isExtensionDom(node) || isChatListOrNavigationElement(node) || (isNavLike(one, node) && !listLikeClass)) return { score: -100, reason: "导航/插件/聊天列表区域" };
+    if (rect.width < 220 || rect.height < 48) return { score: -80, reason: "尺寸不像卡片" };
+    if (rect.left < 120 && rect.width < 260) return { score: -80, reason: "疑似左侧导航" };
+    if (listLikeClass) { score += 15; reasons.push("类名像候选人卡片"); }
+    if (/\d{2}\s*岁/.test(one)) { score += 22; reasons.push("年龄"); }
+    if (/(?:应届生|无经验|\d+\s*[-~—至]?\s*\d*\s*年(?:以上|经验|工作经验)?)/.test(one)) { score += 18; reasons.push("年限"); }
+    if (/学历不限|大专|本科|硕士|博士|研究生|中专|高中/.test(one)) { score += 15; reasons.push("学历"); }
+    if (SALARY_RE.test(one)) { score += 10; reasons.push("薪资"); }
+    if (COMPANY_NAME_RE.test(one) || /工作经历|任职|公司/.test(one)) { score += 10; reasons.push("公司/经历"); }
+    if (/大学|学院|学校|教育经历/.test(one)) { score += 8; reasons.push("学校/教育"); }
+    const skillHits = safeKeywords(one, SKILL_WORDS).length;
+    if (skillHits) { score += Math.min(18, skillHits * 4); reasons.push("技能"); }
+    if (/打招呼/.test(one)) { score += 5; reasons.push("包含候选人操作按钮文本"); }
+    if (/职位管理|全部职位|招聘数据|我的客服|登录|充值|发布职位|筛选|清空|排序|推荐牛人\s*搜索/.test(one)) { score -= 35; reasons.push("导航/筛选词过多"); }
+    const name = extractCandidateListName(text);
+    if (name) { score += 12; reasons.push("姓名"); }
+    return { score, reason: reasons.join("；") || "未命中候选人卡片特征" };
+  }
+
+  function candidateListCardNodes() {
+    const selectors = [
+      "[class*='card']", "[class*='geek']", "[class*='candidate']", "[class*='recommend']", "[class*='search']", "[class*='resume']", "[class*='user']",
+      "li", "article", "section", "div",
+    ];
+    const raw = queryVisible(selectors).filter((node) => !node.closest?.("#ai-recruit-assistant, .ai-recruit-assistant, [data-ai-recruit-assistant]"));
+    const ranked = raw.map((node) => ({ node, ...candidateListCardScore(node) })).filter((item) => item.score >= 35);
+    ranked.sort((a, b) => {
+      const ar = a.node.getBoundingClientRect();
+      const br = b.node.getBoundingClientRect();
+      return b.score - a.score || ar.top - br.top || (ar.width * ar.height) - (br.width * br.height);
+    });
+    const accepted = [];
+    for (const item of ranked) {
+      const rect = item.node.getBoundingClientRect();
+      const text = oneLine(textOf(item.node));
+      const duplicate = accepted.some((existing) => {
+        const er = existing.node.getBoundingClientRect();
+        const et = oneLine(textOf(existing.node));
+        const contains = existing.node.contains(item.node) || item.node.contains(existing.node);
+        const sameArea = Math.abs(rect.top - er.top) < 8 && Math.abs(rect.left - er.left) < 8;
+        return contains || sameArea || (text && et && (text === et || text.includes(et) || et.includes(text)));
+      });
+      if (!duplicate) accepted.push(item);
+      if (accepted.length >= 30) break;
+    }
+    return { accepted, ranked, rejected: raw.map((node) => ({ node, ...candidateListCardScore(node) })).filter((item) => item.score < 35).slice(0, 50) };
+  }
+
+  function extractCandidateListName(text) {
+    const lines = linesOf(text).slice(0, 10);
+    for (const line of lines) {
+      const cleaned = oneLine(line).replace(/^(?:牛人|候选人|姓名)[:：\s]*/, "").replace(/\s*(?:刚刚活跃|今日活跃|在线|近期活跃).*$/, "");
+      const token = cleaned.split(/[\s|｜,，]/).find(Boolean) || "";
+      if (isValidHeaderNameToken(token)) return token;
+    }
+    return parseNameFromText(text);
+  }
+
+  function extractCompaniesFromCard(text) {
+    const lines = linesOf(text);
+    return uniq(lines.filter((line) => COMPANY_NAME_RE.test(line) && !/期望|搜索|筛选|学历/.test(line)).map((line) => oneLine(line).replace(/\s+/g, " ").slice(0, 60))).slice(0, 5);
+  }
+
+  function extractSchoolsFromCard(text) {
+    const lines = linesOf(text);
+    return uniq(lines.filter((line) => /大学|学院|学校/.test(line) && !/筛选|搜索/.test(line)).map((line) => oneLine(line).slice(0, 60))).slice(0, 5);
+  }
+
+  function extractHighlightsFromCard(text) {
+    return linesOf(text).filter((line) => /项目|负责|熟悉|精通|经验|作品|亮点|优势|技能|公司|大学|学院/.test(line) && !/打招呼|立即沟通/.test(line)).slice(0, 8);
+  }
+
+  function cardCandidateFromNode(item, pageType) {
+    const raw = cleanText(textOf(item.node));
+    const name = extractCandidateListName(raw);
+    const candidate = sourceCandidateFromRaw(raw, pageType === "recommend_page" ? "recommend_card" : "search_card", raw);
+    const exp = parseExperience(raw);
+    candidate.name = candidate.name || name;
+    candidate.age = candidate.age || parseAge(raw);
+    candidate.experience_years = candidate.experience_years ?? exp.experience_years;
+    candidate.experience_years_text = candidate.experience_years_text || exp.experience_years_text;
+    candidate.education = candidate.education || parseEducation(raw);
+    candidate.salary_expectation = candidate.salary_expectation || (raw.match(SALARY_RE) || [""])[0];
+    candidate.city = candidate.city || (raw.match(CITY_RE) || [""])[0];
+    candidate.skills = uniq([...(candidate.skills || []), ...safeKeywords(raw, SKILL_WORDS).filter((word) => !RESUME_SKILL_DENYLIST.includes(word))]).slice(0, 16);
+    candidate.companies = uniq([...(candidate.companies || []), ...extractCompaniesFromCard(raw)]).slice(0, 8);
+    candidate.schools = extractSchoolsFromCard(raw);
+    candidate.highlights = extractHighlightsFromCard(raw);
+    candidate.source = pageType === "recommend_page" ? "recommend_card" : "search_card";
+    candidate.sources_used = [candidate.source];
+    candidate.raw_text = raw.slice(0, 3000);
+    candidate.source_url = location.href;
+    candidate.confidence = Math.max(candidate.confidence || 0, Math.min(95, 35 + item.score));
+    candidate.profile_complete = Boolean(candidate.name && (candidate.age || candidate.experience_years !== null || candidate.education));
+    candidate.warnings = [];
+    return {
+      name: candidate.name || "",
+      age: candidate.age || null,
+      experience_years: candidate.experience_years,
+      experience_years_text: candidate.experience_years_text || "",
+      education: candidate.education || "",
+      city: candidate.city || "",
+      expected_position: candidate.expected_position || "",
+      current_title: candidate.current_title || candidate.title || "",
+      salary_expectation: candidate.salary_expectation || "",
+      skills: candidate.skills || [],
+      companies: candidate.companies || [],
+      schools: candidate.schools || [],
+      highlights: candidate.highlights || [],
+      raw_text: candidate.raw_text,
+      source: candidate.source,
+      source_url: candidate.source_url,
+      confidence: candidate.confidence,
+    };
+  }
+
+  function extractCandidateList() {
+    const pageType = detectCandidateListPageType() || detectPageType();
+    const { accepted, ranked, rejected } = candidateListCardNodes();
+    const candidates = [];
+    const seen = new Set();
+    for (const item of accepted) {
+      const candidate = cardCandidateFromNode(item, pageType);
+      const key = `${candidate.name}|${candidate.age || ""}|${candidate.experience_years ?? ""}|${candidate.education}|${candidate.current_title}|${candidate.raw_text.slice(0, 80)}`;
+      if (!candidate.name || seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(candidate);
+      if (candidates.length >= 25) break;
+    }
+    const debug = {
+      page_type: pageType === "recommend_page" ? "recommend_page" : "search_page",
+      card_candidates_count: ranked.length,
+      accepted_count: candidates.length,
+      rejected_count: rejected.length,
+      accepted_previews: accepted.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+      rejected_previews: rejected.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+    };
+    return { ok: true, page_type: debug.page_type, candidates, candidate_list_scan_debug: debug };
+  }
+
   function detectPageType() {
     const body = textOf(document.body).slice(0, 8000);
-    if (/\/web\/chat/.test(location.href) || findActiveChatMainPanel() || body.includes("沟通")) return "chat_page";
+    if (/\/web\/chat/.test(location.href) || findActiveChatMainPanel()) return "chat_page";
+    const listPageType = detectCandidateListPageType();
+    if (listPageType) return listPageType;
+    if (body.includes("沟通")) return "chat_page";
     if (/职位描述|任职要求|发布职位|招聘中|岗位职责/.test(body)) return "job_page";
     if (/期望职位|工作经历|教育经历/.test(body)) return "candidate_page";
     return "unknown";
@@ -1487,6 +1660,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
           rejected_skills: candidate.candidate.structured_resume.rejected_skills,
         } : {},
         job_parse_result: job.debug?.job_parse_result || pickJobDebug(job.job),
+        candidate_list_scan_debug: extractCandidateList().candidate_list_scan_debug,
         candidate_extraction_debug: candidate,
         job_extraction_debug: job,
         chat_extraction_debug: chat,
@@ -1503,6 +1677,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       else if (message?.type === "EXTRACT_PAGE_CONTEXT") sendResponse(extractPageContext());
       else if (message?.type === "EXTRACT_JOB") sendResponse(extractJob());
       else if (message?.type === "EXTRACT_CANDIDATE") sendResponse(extractCandidate());
+      else if (message?.type === "EXTRACT_CANDIDATE_LIST") sendResponse(extractCandidateList());
       else if (message?.type === "EXTRACT_CHAT") sendResponse(extractChat());
       else if (message?.type === "FILL_GREETING") sendResponse(fillGreeting(message.text || ""));
       else sendResponse({ ok: false, error: `未知消息类型: ${message?.type || "empty"}`, debug: { url: location.href, title: document.title } });

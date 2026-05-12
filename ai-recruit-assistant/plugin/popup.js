@@ -15,6 +15,8 @@ const state = {
   followups:[],
   jobProfileMatches:[],
   currentJobContext:null,
+  scannedCandidates:[],
+  scannedPageType:"",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -28,6 +30,7 @@ function notify(msg, type='info'){
 }
 function feedback(msg, type='info'){ notify(msg, type); }
 function textOrDash(v){ return v ? String(v) : '-'; }
+function htmlEscape(v){ return String(v??'').replace(/[&<>"']/g,(s)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 function hasJobDetail(){ return Boolean(state.job?.jd_complete || state.job?.description || (state.job?.requirements||[]).length || (state.job?.responsibilities||[]).length); }
 function splitLines(value){
   if(Array.isArray(value)) return value.map((x)=>String(x).trim()).filter(Boolean);
@@ -617,6 +620,102 @@ async function analyzeRuleMatch(){
   }
 }
 
+
+function candidateScanPayload(candidate){
+  return {
+    name:candidate.name||'',
+    age:candidate.age||null,
+    city:candidate.city||'',
+    education:candidate.education||'',
+    experience_years:candidate.experience_years??null,
+    current_title:candidate.current_title||'',
+    expected_position:candidate.expected_position||'',
+    skills:candidate.skills||[],
+    companies:candidate.companies||[],
+    projects:candidate.projects||[],
+    styles:candidate.styles||[],
+    project_keywords:candidate.project_keywords||[],
+    style_keywords:candidate.style_keywords||[],
+    company_keywords:candidate.company_keywords||[],
+    resume_text:candidate.raw_text||'',
+    raw_text:candidate.raw_text||'',
+    source_url:candidate.source_url||state.pageContext?.url||'',
+  };
+}
+
+function renderScannedCandidates(){
+  const items=state.scannedCandidates||[];
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('scan-page-type',state.scannedPageType||'-');
+  set('scan-candidate-count',items.length);
+  const box=$('scan-candidate-list');
+  if(!box) return;
+  if(!items.length){ box.textContent='暂无扫描结果'; return; }
+  box.innerHTML=items.map((c,i)=>{
+    const score=c.quick_match?`${c.quick_match.score} / ${c.quick_match.level} / ${c.quick_match.recommendation}`:'-';
+    const skills=(c.skills||[]).slice(0,8).map(htmlEscape).join('、')||'-';
+    const companies=(c.companies||[]).slice(0,4).map(htmlEscape).join('、')||'-';
+    return `<div class="reply-box scan-candidate-card"><p><b>${i+1}. ${htmlEscape(c.name||'-')}</b> ${htmlEscape(c.age||'-')}岁 / ${htmlEscape(c.experience_years_text||((c.experience_years??'-')+'年'))} / ${htmlEscape(c.education||'-')} / ${htmlEscape(c.city||'-')}</p><p>期望/当前：${htmlEscape(c.expected_position||'-')} / ${htmlEscape(c.current_title||'-')}</p><p>技能：${skills}</p><p>公司/学校：${companies} / ${(c.schools||[]).slice(0,3).map(htmlEscape).join('、')||'-'}</p><p>快速匹配：${htmlEscape(score)}</p></div>`;
+  }).join('');
+}
+
+async function quickScoreScannedCandidates(candidates){
+  const job=jobConfigForApi();
+  const hasJob=Boolean(job.title || job.description || (job.requirements||[]).length || (job.preferred_keywords||[]).length);
+  const status=$('scan-job-status');
+  if(!hasJob){ if(status) status.textContent='未加载当前岗位，仅保存候选人资产'; return candidates; }
+  if(status) status.textContent='正在快速匹配...';
+  const scored=[];
+  for(const candidate of candidates){
+    try{
+      const quick=await api('/api/match/quick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate,job})});
+      scored.push({...candidate,quick_match:quick});
+    }catch(e){
+      scored.push({...candidate,quick_match_error:e.message});
+    }
+  }
+  if(status) status.textContent=`已按当前岗位快速匹配：${job.title||job.job_title||'-'}`;
+  return scored;
+}
+
+async function scanCandidateList(){
+  feedback('正在扫描当前页候选人...');
+  const res=await sendToContent({type:'EXTRACT_CANDIDATE_LIST'});
+  if(!res?.ok){ feedback(res?.error||'扫描失败','warn'); return; }
+  state.scannedPageType=res.page_type||'-';
+  state.scannedCandidates=await quickScoreScannedCandidates(res.candidates||[]);
+  renderScannedCandidates();
+  feedback(`扫描完成：${state.scannedCandidates.length} 位候选人`);
+}
+
+async function saveScannedCandidates(){
+  const items=state.scannedCandidates||[];
+  if(!items.length){ feedback('暂无扫描结果，请先扫描当前页候选人','warn'); return; }
+  let saved=0, updated=0, failed=0;
+  for(const candidate of items){
+    try{
+      const data=await api('/api/candidates/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(candidateScanPayload(candidate))});
+      if(data.action==='updated') updated+=1;
+      else saved+=1;
+    }catch(e){
+      failed+=1;
+      console.warn('保存扫描候选人失败', candidate?.name, e);
+    }
+  }
+  const summary=`保存完成：新增 ${saved}，更新 ${updated}，失败 ${failed}`;
+  const el=$('scan-save-summary'); if(el) el.textContent=summary;
+  feedback(summary, failed?'warn':'info');
+}
+
+function clearScannedCandidates(){
+  state.scannedCandidates=[];
+  state.scannedPageType='';
+  const summary=$('scan-save-summary'); if(summary) summary.textContent='';
+  const status=$('scan-job-status'); if(status) status.textContent='已清空';
+  renderScannedCandidates();
+  feedback('扫描结果已清空');
+}
+
 async function viewMatchHistory(){
   try{
     if(state.priorityResult) await saveMatchAsset({silent:true});
@@ -817,6 +916,9 @@ function bind(){
   const saveCandidateAssetBtn=$('save-candidate-asset-btn'); if(saveCandidateAssetBtn) saveCandidateAssetBtn.onclick=()=>saveCandidateAsset();
   const saveJobAssetBtn=$('save-job-asset-btn'); if(saveJobAssetBtn) saveJobAssetBtn.onclick=()=>saveJobAsset();
   const viewMatchHistoryBtn=$('view-match-history-btn'); if(viewMatchHistoryBtn) viewMatchHistoryBtn.onclick=viewMatchHistory;
+  const scanCandidatesBtn=$('scan-candidates-btn'); if(scanCandidatesBtn) scanCandidatesBtn.onclick=scanCandidateList;
+  const saveScannedBtn=$('save-scanned-candidates-btn'); if(saveScannedBtn) saveScannedBtn.onclick=saveScannedCandidates;
+  const clearScannedBtn=$('clear-scanned-candidates-btn'); if(clearScannedBtn) clearScannedBtn.onclick=clearScannedCandidates;
   const saveProfileBtn=$('save-job-profile-btn'); if(saveProfileBtn) saveProfileBtn.onclick=saveJobProfile;
   const loadProfileBtn=$('load-job-profile-btn'); if(loadProfileBtn) loadProfileBtn.onclick=loadCurrentJobProfile;
   $('save-mode-btn').onclick=saveMode;
