@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from config import settings
 from db import get_connection, init_db
 from database import init_recruitment_db
-from crud import get_candidate, get_job, save_rule_match
+import crud
 from models import MatchAnalyzeRequest
 from routes import assert_asset_routes_registered
 from routes.candidates import router as candidates_router
@@ -100,6 +100,40 @@ def dashboard_page() -> str:
 
 
 
+def _get_candidate_asset(candidate_id: int) -> dict | None:
+    getter = getattr(crud, "get_candidate", None)
+    if callable(getter):
+        return getter(candidate_id)
+    return next((item for item in crud.list_candidates() if item.get("id") == candidate_id), None)
+
+
+def _get_job_asset(job_id: int) -> dict | None:
+    getter = getattr(crud, "get_job", None)
+    if callable(getter):
+        return getter(job_id)
+    return next((item for item in crud.list_jobs() if item.get("id") == job_id), None)
+
+
+def _save_rule_match_asset(candidate_id: int, job_id: int, analysis: dict) -> dict:
+    saver = getattr(crud, "save_rule_match", None)
+    if callable(saver):
+        return saver(candidate_id, job_id, analysis)
+    return crud.save_match(
+        {
+            "candidate_id": candidate_id,
+            "job_id": job_id,
+            "score": analysis.get("score"),
+            "level": analysis.get("level", ""),
+            "recommendation": analysis.get("recommendation", ""),
+            "matched": analysis.get("matched") or [],
+            "missing": analysis.get("missing") or [],
+            "risks": analysis.get("risks") or [],
+            "reasoning": analysis.get("reasoning", ""),
+            "ai_analysis": "rules_v1",
+        }
+    )
+
+
 @app.post("/api/match/quick")
 def rule_match_quick(payload: dict) -> dict:
     candidate = (payload or {}).get("candidate") or {}
@@ -111,19 +145,18 @@ def rule_match_quick(payload: dict) -> dict:
 
 @app.post("/api/match/analyze")
 def rule_match_analyze(payload: MatchAnalyzeRequest) -> dict:
-    candidate = get_candidate(payload.candidate_id)
-    if not candidate:
-        raise HTTPException(status_code=404, detail="候选人不存在")
-    job = get_job(payload.job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="岗位不存在")
+    candidate = _get_candidate_asset(payload.candidate_id)
+    job = _get_job_asset(payload.job_id)
+    if not candidate or not job:
+        return {"ok": False, "error": "candidate or job not found", "candidate_id": payload.candidate_id, "job_id": payload.job_id}
     analysis = analyze_match(candidate, job)
-    saved = save_rule_match(payload.candidate_id, payload.job_id, analysis)
+    saved = _save_rule_match_asset(payload.candidate_id, payload.job_id, analysis)
     return {
+        "ok": True,
         **analysis,
         "candidate_id": payload.candidate_id,
         "job_id": payload.job_id,
-        "match_id": saved["match_id"],
+        "match_id": saved.get("match_id"),
     }
 
 @app.get("/settings", response_class=HTMLResponse)
