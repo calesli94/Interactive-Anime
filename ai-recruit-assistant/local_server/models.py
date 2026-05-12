@@ -54,6 +54,11 @@ class MatchAnalyzeRequest(BaseModel):
     job_id: int
 
 
+class MatchQuickRequest(BaseModel):
+    candidate: dict[str, Any] = Field(default_factory=dict)
+    job: dict[str, Any] = Field(default_factory=dict)
+
+
 class MatchSaveRequest(BaseModel):
     candidate_id: int | None = None
     job_id: int | None = None

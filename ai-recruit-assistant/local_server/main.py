@@ -12,7 +12,7 @@ from config import settings
 from db import get_connection, init_db
 from database import init_recruitment_db
 import crud
-from models import MatchAnalyzeRequest
+from models import MatchAnalyzeRequest, MatchQuickRequest
 from routes import assert_asset_routes_registered
 from routes.candidates import router as candidates_router
 from routes.jobs import router as jobs_router
@@ -135,11 +135,9 @@ def _save_rule_match_asset(candidate_id: int, job_id: int, analysis: dict) -> di
 
 
 @app.post("/api/match/quick")
-def rule_match_quick(payload: dict) -> dict:
-    candidate = (payload or {}).get("candidate") or {}
-    job = (payload or {}).get("job") or {}
-    if not isinstance(candidate, dict) or not isinstance(job, dict):
-        raise HTTPException(status_code=400, detail="candidate/job 必须是对象")
+def rule_match_quick(payload: MatchQuickRequest) -> dict:
+    candidate = payload.candidate or {}
+    job = payload.job or {}
     return analyze_match(candidate, job)
 
 
