@@ -1,47 +1,45 @@
 def analyze_match(candidate, job):
+    """
+    Basic rule-based match engine V1
+    """
     score = 0
     matched = []
     missing = []
     risks = []
 
-    candidate_text = str(candidate or "").lower()
-    job_text = str(job or "").lower()
+    candidate_text = str(candidate).lower()
+    job_text = str(job).lower()
 
     keywords = [
-        "unity", "ue", "shader", "ta", "python",
-        "技术美术", "动画", "角色", "特效",
-        "招聘", "猎头", "mapping"
+        "unity",
+        "ue",
+        "shader",
+        "ta",
+        "技术美术",
+        "动画",
+        "角色",
+        "特效",
+        "招聘",
+        "猎头"
     ]
 
     for keyword in keywords:
-        if keyword.lower() in candidate_text and keyword.lower() in job_text:
+        if keyword in candidate_text and keyword in job_text:
             matched.append(keyword)
             score += 10
 
-    score = min(score, 100)
-
-    if score >= 90:
-        level = "S"
-        recommendation = "立即沟通"
-    elif score >= 75:
+    if score >= 70:
         level = "A"
-        recommendation = "重点沟通"
-    elif score >= 60:
+    elif score >= 50:
         level = "B"
-        recommendation = "可沟通"
-    elif score >= 40:
-        level = "C"
-        recommendation = "观察"
     else:
-        level = "D"
-        recommendation = "不推荐"
+        level = "C"
 
     return {
-        "score": score,
+        "score": min(score, 100),
         "level": level,
-        "recommendation": recommendation,
         "matched": matched,
         "missing": missing,
         "risks": risks,
-        "reasoning": "rule_match_engine_v1"
+        "recommendation": "rule_based_match_v1"
     }
