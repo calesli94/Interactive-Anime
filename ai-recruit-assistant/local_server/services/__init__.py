@@ -1,1 +1,1 @@
-"""Service modules for the local AI Recruit Assistant backend."""
+"""Local server service package."""
