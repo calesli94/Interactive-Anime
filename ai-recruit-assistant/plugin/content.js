@@ -1323,12 +1323,12 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
 
 
   function detectCandidateListPageType() {
-    const href = location.href;
+    const href = location.href.toLowerCase();
     const body = textOf(document.body).slice(0, 12000);
-    if (/推荐牛人/.test(href) || /推荐牛人/.test(body)) return "recommend_page";
-    if (/深度搜索|推荐列表|搜索/.test(href) || /深度搜索|推荐列表/.test(body)) return "search_page";
-    if (/search|geek|candidate|recommend/i.test(href) && /搜索|牛人|候选人/.test(body)) return "search_page";
-    if (/搜索结果|搜索牛人|搜索候选人/.test(body)) return "search_page";
+    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href)) return "recommend_page";
+    if (/\/web\/(chat|geek|boss)\/search(?:[/?#]|$)/.test(href)) return "search_page";
+    if (/深度搜索|搜索结果/.test(body)) return "search_page";
+    if (/推荐牛人/.test(body)) return "recommend_page";
     if (/搜索/.test(body) && /牛人|候选人|\d{2}\s*岁|学历|经验/.test(body)) return "search_page";
     return "";
   }
@@ -1362,11 +1362,12 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     const rect = node.getBoundingClientRect();
     const hasGreeting = /打招呼/.test(one);
     const hasAge = /\d{2}\s*岁/.test(one);
-    const hasYears = /(?:应届生|无经验|\d+\s*(?:[-~—至]\s*\d+\s*)?年(?:以上|经验|工作经验)?)/.test(one);
-    const hasEducation = /本科|大专|硕士|博士|研究生/.test(one);
+    const hasYears = /(?:应届生|无经验|10\s*年以上|\d+\s*(?:[-~—至]\s*\d+\s*)?年(?:以上|经验|工作经验)?)/.test(one);
+    const hasEducation = /本科|大专|硕士|博士|研究生|学历不限/.test(one);
     const hasSalary = /\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|\d{1,2}\s*[kK]/.test(one) || SALARY_RE.test(one);
+    const hasExpected = /期望/.test(one);
     const hasName = Boolean(extractCandidateListNameFromNode(node));
-    return { text, one, rect, hasGreeting, hasAge, hasYears, hasEducation, hasSalary, hasName };
+    return { text, one, rect, hasGreeting, hasAge, hasYears, hasEducation, hasSalary, hasExpected, hasName };
   }
 
   function candidateContainerRejectReason(node) {
@@ -1376,17 +1377,20 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     if (isExtensionDom(node)) return "插件DOM";
     if (isCandidateScanExcludedElement(node)) return "侧栏/导航/筛选区域";
     if (isNavLike(signals.one, node) && !signals.hasGreeting) return "导航/筛选区域";
-    if (signals.rect.width <= 500) return "宽度小于等于500";
+    if (signals.rect.width <= 600) return "宽度小于等于600";
+    if (signals.rect.height <= 80) return "高度小于等于80";
+    if (signals.rect.left <= 250) return "左侧位置小于等于250";
     if (!signals.hasGreeting) return "不包含打招呼";
     if (!(signals.hasAge || signals.hasYears)) return "缺少年龄或年限";
     if (!(signals.hasEducation || signals.hasSalary)) return "缺少学历或薪资";
+    if (!(signals.hasExpected || signals.hasSalary)) return "缺少期望或薪资";
     return "";
   }
 
   function findCandidateContainerFromGreeting(node) {
     const visited = [];
     let current = node;
-    for (let depth = 0; current && current instanceof Element && depth < 10; depth += 1, current = current.parentElement) {
+    for (let depth = 0; current && current instanceof Element && depth < 8; depth += 1, current = current.parentElement) {
       if (current === document.body || current === document.documentElement) break;
       if (isExtensionDom(current)) break;
       visited.push(current);
@@ -1396,8 +1400,8 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     const best = visited
       .map((item, index) => ({ node: item, index, reason: candidateContainerRejectReason(item), rect: item.getBoundingClientRect(), text: oneLine(textOf(item)) }))
       .sort((a, b) => {
-        const score = (a.text.includes("打招呼") ? 20 : 0) + (/\d{2}\s*岁/.test(a.text) ? 15 : 0) + (/本科|大专|硕士|博士/.test(a.text) ? 10 : 0) + (a.rect.width > 500 ? 10 : 0);
-        const bScore = (b.text.includes("打招呼") ? 20 : 0) + (/\d{2}\s*岁/.test(b.text) ? 15 : 0) + (/本科|大专|硕士|博士/.test(b.text) ? 10 : 0) + (b.rect.width > 500 ? 10 : 0);
+        const score = (a.text.includes("打招呼") ? 20 : 0) + (/\d{2}\s*岁/.test(a.text) ? 15 : 0) + (/本科|大专|硕士|博士|学历不限/.test(a.text) ? 10 : 0) + (/期望|\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(a.text) ? 10 : 0) + (a.rect.width > 600 ? 10 : 0);
+        const bScore = (b.text.includes("打招呼") ? 20 : 0) + (/\d{2}\s*岁/.test(b.text) ? 15 : 0) + (/本科|大专|硕士|博士|学历不限/.test(b.text) ? 10 : 0) + (/期望|\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(b.text) ? 10 : 0) + (b.rect.width > 600 ? 10 : 0);
         return bScore - score || a.index - b.index;
       })[0];
     return { node: null, depth: -1, reason: best?.reason || "未找到候选人容器" };
@@ -1406,8 +1410,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   function greetingCandidateControls() {
     return queryVisible(["button", "div", "span", "a"]).filter((node) => {
       const text = oneLine(textOf(node));
-      if (!/打招呼/.test(text)) return false;
-      if (text.length > 80 && !/^打招呼$/.test(text)) return false;
+      if (text !== "打招呼") return false;
       if (isCandidateScanExcludedElement(node)) return false;
       return true;
     });
@@ -1424,6 +1427,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     if (signals.hasYears) { score += 10; reasons.push("年限"); }
     if (signals.hasEducation) { score += 8; reasons.push("学历"); }
     if (signals.hasSalary) { score += 6; reasons.push("薪资"); }
+    if (signals.hasExpected) { score += 6; reasons.push("期望"); }
     const skillHits = safeKeywords(signals.one, SKILL_WORDS).length;
     if (skillHits) { score += Math.min(12, skillHits * 3); reasons.push("技能"); }
     return { score, reason: reasons.join("；") };
@@ -1459,9 +1463,14 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   }
 
   function extractCandidateListName(text) {
+    const raw = cleanText(text);
+    const activeMatch = raw.match(/([\u4e00-\u9fa5]{2,4})(?:\s*)?(?:刚刚活跃|今日活跃|本周活跃|近期活跃|在线)/);
+    if (activeMatch && isValidHeaderNameToken(activeMatch[1])) return activeMatch[1];
+    const ageMatch = raw.match(/([\u4e00-\u9fa5]{2,4})[^\n\r\u4e00-\u9fa5]{0,12}\d{2}\s*岁/);
+    if (ageMatch && isValidHeaderNameToken(ageMatch[1])) return ageMatch[1];
     const lines = linesOf(text).slice(0, 10);
     for (const line of lines) {
-      const cleaned = oneLine(line).replace(/^(?:牛人|候选人|姓名)[:：\s]*/, "").replace(/\s*(?:刚刚活跃|今日活跃|在线|近期活跃).*$/, "");
+      const cleaned = oneLine(line).replace(/^(?:牛人|候选人|姓名)[:：\s]*/, "").replace(/\s*(?:刚刚活跃|今日活跃|本周活跃|在线|近期活跃).*$/, "");
       const token = cleaned.split(/[\s|｜,，]/).find(Boolean) || "";
       if (isValidHeaderNameToken(token)) return token;
     }
@@ -1476,6 +1485,15 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
   function extractSchoolsFromCard(text) {
     const lines = linesOf(text);
     return uniq(lines.filter((line) => /大学|学院|学校/.test(line) && !/筛选|搜索/.test(line)).map((line) => oneLine(line).slice(0, 60))).slice(0, 5);
+  }
+
+  function extractSkillsFromCardNode(node, raw) {
+    const tagTexts = queryVisible(["span", "em", "i", "b", "label", "div"], node)
+      .map((item) => oneLine(textOf(item)))
+      .filter((text) => text.length >= 2 && text.length <= 18)
+      .filter((text) => !/打招呼|岁|年|本科|大专|硕士|博士|期望|活跃|在线|立即沟通/.test(text));
+    const extraSkillWords = ["Photoshop", "PhotoShop", "MAYA", "Maya", "Unity", "UE", "TA", "3D", "动画", "原画", "游戏动作", "人力资源管理", "行政管理", "特效", "Shader", "Python", "美术", "招聘", "猎头"];
+    return uniq([...safeKeywords(raw, [...SKILL_WORDS, ...extraSkillWords]), ...tagTexts.filter((text) => safeKeywords(text, extraSkillWords).length)]).slice(0, 16);
   }
 
   function extractHighlightsFromCard(text) {
@@ -1494,7 +1512,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
     candidate.education = candidate.education || parseEducation(raw);
     candidate.salary_expectation = candidate.salary_expectation || (raw.match(SALARY_RE) || [""])[0];
     candidate.city = candidate.city || (raw.match(CITY_RE) || [""])[0];
-    candidate.skills = uniq([...(candidate.skills || []), ...safeKeywords(raw, SKILL_WORDS).filter((word) => !RESUME_SKILL_DENYLIST.includes(word))]).slice(0, 16);
+    candidate.skills = uniq([...(candidate.skills || []), ...extractSkillsFromCardNode(item.node, raw).filter((word) => !RESUME_SKILL_DENYLIST.includes(word))]).slice(0, 16);
     candidate.companies = uniq([...(candidate.companies || []), ...extractCompaniesFromCard(raw)]).slice(0, 8);
     candidate.schools = extractSchoolsFromCard(raw);
     candidate.highlights = extractHighlightsFromCard(raw);
@@ -1540,7 +1558,10 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       if (candidates.length >= 25) break;
     }
     const debug = {
+      detected_page_type: pageType === "recommend_page" ? "recommend_page" : "search_page",
       page_type: pageType === "recommend_page" ? "recommend_page" : "search_page",
+      url: location.href,
+      total_greeting_buttons: total_buttons || 0,
       total_buttons: total_buttons || 0,
       candidate_containers_found: accepted.length,
       accepted_candidates: candidates.length,
@@ -1552,15 +1573,16 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       accepted_previews: accepted.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
       rejected_previews: rejected.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
     };
-    console.log("[AI Recruit] Candidate scan debug", debug);
-    return { ok: true, page_type: debug.page_type, candidates, candidate_scan_debug: debug, candidate_list_scan_debug: debug };
+    console.log("[AI Recruit] candidate list scan debug", debug);
+    return { ok: true, page_type: debug.page_type, candidates, debug, candidate_scan_debug: debug, candidate_list_scan_debug: debug };
   }
 
   function detectPageType() {
     const body = textOf(document.body).slice(0, 8000);
-    if (/\/web\/chat/.test(location.href) || findActiveChatMainPanel()) return "chat_page";
+    const href = location.href.toLowerCase();
     const listPageType = detectCandidateListPageType();
     if (listPageType) return listPageType;
+    if (/\/web\/chat\/index(?:[/?#]|$)/.test(href) || findActiveChatMainPanel()) return "chat_page";
     if (body.includes("沟通")) return "chat_page";
     if (/职位描述|任职要求|发布职位|招聘中|岗位职责/.test(body)) return "job_page";
     if (/期望职位|工作经历|教育经历/.test(body)) return "candidate_page";
