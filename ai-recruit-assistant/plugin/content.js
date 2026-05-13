@@ -1540,29 +1540,153 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       raw_text: candidate.raw_text,
       source: candidate.source,
       source_url: candidate.source_url,
+      profile_complete: false,
       confidence: candidate.confidence,
     };
   }
 
+
+  function recommendCardSignals(node) {
+    const text = textOf(node);
+    const one = oneLine(text);
+    const rect = node.getBoundingClientRect();
+    const exp = parseExperience(one);
+    const salary = (one.match(/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/) || one.match(SALARY_RE) || [""])[0];
+    return {
+      text,
+      one,
+      rect,
+      name: extractCandidateListNameFromNode(node) || extractCandidateListName(text),
+      age: parseAge(one),
+      experience_years: exp.experience_years,
+      experience_years_text: exp.experience_years_text,
+      education: parseEducation(one),
+      salary,
+      hasAge: /\d{2}\s*岁/.test(one),
+      hasExperience: /10\s*年以上|\d+\s*年/.test(one) || Boolean(exp.experience_years_text),
+      hasEducation: /本科|大专|硕士|博士|学历不限/.test(one),
+      hasSalary: Boolean(salary),
+      hasExpected: /期望/.test(one),
+    };
+  }
+
+  function rejectRecommendCardReason(node) {
+    if (!node || !(node instanceof Element)) return "不是元素";
+    if (!isVisible(node) || !isInViewport(node)) return "隐藏或不在可视区";
+    if (isExtensionDom(node)) return "插件DOM";
+    if (isCandidateScanExcludedElement(node)) return "侧栏/导航/筛选/广告区域";
+    const s = recommendCardSignals(node);
+    if (s.rect.left <= 250) return "不在主内容区";
+    if (s.rect.width <= 700) return "宽度小于等于700";
+    if (s.rect.height <= 100) return "高度小于等于100";
+    if (s.rect.height > 850) return "高度过大，疑似列表父容器";
+    if (!s.one || s.one.length < 30) return "文本过短";
+    if (s.one.length > 2600) return "文本过长，疑似列表父容器";
+    if (!s.hasAge) return "缺少年龄";
+    if (!s.hasExperience) return "缺少年限";
+    if (!s.hasEducation) return "缺少学历";
+    if (!(s.hasExpected || s.hasSalary)) return "缺少期望或薪资";
+    if (!s.name) return "缺少姓名";
+    return "";
+  }
+
+  function scoreRecommendCard(node) {
+    const reason = rejectRecommendCardReason(node);
+    const s = recommendCardSignals(node);
+    if (reason) return { score: -100, reason };
+    let score = 60;
+    const reasons = ["主内容候选人卡片"];
+    if (s.name) { score += 15; reasons.push(`姓名:${s.name}`); }
+    if (s.hasAge) { score += 10; reasons.push("年龄"); }
+    if (s.hasExperience) { score += 10; reasons.push("年限"); }
+    if (s.hasEducation) { score += 10; reasons.push("学历"); }
+    if (s.hasExpected) { score += 8; reasons.push("期望"); }
+    if (s.hasSalary) { score += 8; reasons.push("薪资"); }
+    return { score, reason: reasons.join("；") };
+  }
+
+  function scanRecommendCandidateCards() {
+    const nodes = queryVisible(["li", "article", "section", "div"]);
+    const candidates = [];
+    const rejected = [];
+    for (const node of nodes) {
+      const scored = scoreRecommendCard(node);
+      if (scored.score >= 60) candidates.push({ node, ...scored });
+      else if (rejected.length < 80) rejected.push({ node, ...scored });
+    }
+    candidates.sort((a, b) => {
+      const ar = a.node.getBoundingClientRect();
+      const br = b.node.getBoundingClientRect();
+      return (ar.width * ar.height) - (br.width * br.height) || ar.top - br.top;
+    });
+    const accepted = [];
+    for (const item of candidates) {
+      const duplicate = accepted.some((existing) => existing.node === item.node || existing.node.contains(item.node) || item.node.contains(existing.node));
+      if (!duplicate) accepted.push(item);
+      if (accepted.length >= 30) break;
+    }
+    accepted.sort((a, b) => a.node.getBoundingClientRect().top - b.node.getBoundingClientRect().top);
+    const debug = {
+      page_type: detectCandidateListPageType() || detectPageType(),
+      possible_card_containers: candidates.length,
+      accepted_count: accepted.length,
+      rejected_count: rejected.length,
+      accepted_previews: accepted.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+      rejected_previews: rejected.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+    };
+    return { accepted, rejected, debug };
+  }
+
+  function recommendModalCandidate() {
+    const item = resumeModalCandidates()[0];
+    if (!item) return null;
+    const candidate = cardCandidateFromNode({ node: item.node, score: Math.max(80, item.score || 0), reason: item.reason || "recommend_resume_modal" }, "recommend_page");
+    candidate.source = "recommend_card";
+    candidate.profile_complete = false;
+    return candidate.name ? candidate : null;
+  }
+
   function extractCandidateList() {
     const pageType = detectCandidateListPageType() || detectPageType();
-    const { accepted, ranked, rejected, total_buttons } = candidateListCardNodes();
+    const useRecommendScanner = pageType === "recommend_page" || pageType === "search_page";
+    const recommendScan = useRecommendScanner ? scanRecommendCandidateCards() : null;
+    const legacyScan = useRecommendScanner ? null : candidateListCardNodes();
+    const accepted = recommendScan?.accepted || legacyScan?.accepted || [];
+    const rejected = recommendScan?.rejected || legacyScan?.rejected || [];
+    const ranked = recommendScan?.accepted || legacyScan?.ranked || [];
+    const totalButtons = legacyScan?.total_buttons || greetingCandidateControls().length;
     const candidates = [];
     const seen = new Set();
+    const modalCandidate = useRecommendScanner ? recommendModalCandidate() : null;
+    if (modalCandidate) {
+      const key = `modal|${modalCandidate.name}|${modalCandidate.raw_text.slice(0, 80)}`;
+      seen.add(key);
+      candidates.push(modalCandidate);
+    }
     for (const item of accepted) {
       const candidate = cardCandidateFromNode(item, pageType);
-      const key = `${candidate.name}|${candidate.age || ""}|${candidate.experience_years ?? ""}|${candidate.education}|${candidate.current_title}|${candidate.raw_text.slice(0, 80)}`;
+      candidate.profile_complete = false;
+      const key = `${candidate.name}|${candidate.age || ""}|${candidate.experience_years ?? ""}|${candidate.education}|${candidate.expected_position}|${candidate.raw_text.slice(0, 80)}`;
       if (!candidate.name || seen.has(key)) continue;
       seen.add(key);
       candidates.push(candidate);
       if (candidates.length >= 25) break;
     }
+    const recommendDebug = recommendScan?.debug || {
+      page_type: pageType,
+      possible_card_containers: ranked.length,
+      accepted_count: accepted.length,
+      rejected_count: rejected.length,
+      accepted_previews: accepted.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+      rejected_previews: rejected.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+    };
     const debug = {
-      detected_page_type: pageType === "recommend_page" ? "recommend_page" : "search_page",
-      page_type: pageType === "recommend_page" ? "recommend_page" : "search_page",
+      detected_page_type: pageType === "recommend_page" ? "recommend_page" : (pageType === "search_page" ? "search_page" : pageType),
+      page_type: pageType === "recommend_page" ? "recommend_page" : (pageType === "search_page" ? "search_page" : pageType),
       url: location.href,
-      total_greeting_buttons: total_buttons || 0,
-      total_buttons: total_buttons || 0,
+      total_greeting_buttons: totalButtons || 0,
+      total_buttons: totalButtons || 0,
+      possible_card_containers: recommendDebug.possible_card_containers ?? ranked.length,
       candidate_containers_found: accepted.length,
       accepted_candidates: candidates.length,
       rejected_candidates: rejected.length,
@@ -1572,9 +1696,18 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
       rejected_count: rejected.length,
       accepted_previews: accepted.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
       rejected_previews: rejected.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+      modal_candidate_found: Boolean(modalCandidate),
     };
-    console.log("[AI Recruit] candidate list scan debug", debug);
-    return { ok: true, page_type: debug.page_type, candidates, debug, candidate_scan_debug: debug, candidate_list_scan_debug: debug };
+    const recommend_candidate_scan_debug = {
+      page_type: debug.page_type,
+      possible_card_containers: debug.possible_card_containers,
+      accepted_count: debug.accepted_count,
+      rejected_count: debug.rejected_count,
+      accepted_previews: debug.accepted_previews,
+      rejected_previews: debug.rejected_previews,
+    };
+    console.log("[AI Recruit] candidate list scan debug", { ...debug, recommend_candidate_scan_debug });
+    return { ok: true, page_type: debug.page_type, candidates, debug, candidate_scan_debug: debug, candidate_list_scan_debug: debug, recommend_candidate_scan_debug };
   }
 
   function detectPageType() {
@@ -1750,6 +1883,7 @@ console.log("[AI Recruit Assistant] content.js injected", location.href);
         job_parse_result: job.debug?.job_parse_result || pickJobDebug(job.job),
         candidate_scan_debug: candidateList.candidate_scan_debug,
         candidate_list_scan_debug: candidateList.candidate_list_scan_debug,
+        recommend_candidate_scan_debug: candidateList.recommend_candidate_scan_debug,
         candidate_extraction_debug: candidate,
         job_extraction_debug: job,
         chat_extraction_debug: chat,
