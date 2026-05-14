@@ -61,6 +61,42 @@ function renderCandidate(index) {
   $("candidateText").value = currentCandidate.raw_text || "";
 }
 
+
+function renderDebugNodes(debugNodes) {
+  $("debugSummary").textContent = `debug_nodes 数量：${debugNodes.length}`;
+  $("debugNodes").innerHTML = "";
+
+  debugNodes.forEach((node) => {
+    const item = document.createElement("div");
+    item.className = "debug-item";
+    item.textContent = [
+      `#${node.index} ${node.tag}`,
+      `className: ${node.className || "-"}`,
+      `id: ${node.id || "-"}`,
+      `size: ${node.width} x ${node.height}`,
+      `salary=${node.hasSalary} age=${node.hasAge} education=${node.hasEducation} greeting=${node.hasGreetingButton}`,
+      `xpath: ${node.xpath}`,
+      `textPreview: ${node.textPreview}`,
+    ].join("\n");
+    $("debugNodes").appendChild(item);
+  });
+}
+
+async function outputDOMDebug() {
+  try {
+    const result = await sendMessageToActiveTab({ type: "DOM_DEBUG_FULL" });
+    const debugNodes = result.debug_nodes || [];
+    renderDebugNodes(debugNodes);
+    $("resultBox").textContent = JSON.stringify({
+      debug_nodes_count: result.debug_nodes_count,
+      page_title: result.page_title,
+      source_url: result.source_url,
+    }, null, 2);
+  } catch (error) {
+    $("debugSummary").textContent = `DOM 调试失败：${error.message}`;
+  }
+}
+
 async function extractCandidate() {
   try {
     const result = await sendMessageToActiveTab({ type: "EXTRACT_CANDIDATE" });
@@ -129,6 +165,7 @@ function showNextCandidate() {
 
 $("checkServiceBtn").addEventListener("click", checkService);
 $("extractBtn").addEventListener("click", extractCandidate);
+$("domDebugBtn").addEventListener("click", outputDOMDebug);
 $("prevCandidateBtn").addEventListener("click", showPreviousCandidate);
 $("nextCandidateBtn").addEventListener("click", showNextCandidate);
 $("saveBtn").addEventListener("click", saveCandidate);

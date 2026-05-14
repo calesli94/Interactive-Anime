@@ -6,6 +6,7 @@ const EDUCATION_KEYWORDS = ["博士", "硕士", "本科", "大专", "高中", "�
 const RECENT_STATUS_KEYWORDS = ["在线", "刚刚活跃", "今日活跃", "本周活跃", "活跃"];
 const FORBIDDEN_NAME_WORDS = ["职位管理", "推荐牛人", "招聘", "筛选", "更多选项", "深度搜索", "项目外包"];
 const EXCLUDED_AREA_WORDS = ["职位管理", "深度搜索", "沟通", "道具", "项目外包", "直播招聘", "招聘规范"];
+const DEBUG_EXCLUDED_NAV_WORDS = ["职位管理", "深度搜索", "项目外包", "直播招聘", "招聘规范"];
 const SALARY_RE = /\d{1,2}-\d{1,2}K/i;
 const AGE_RE = /\d{2}岁/;
 
@@ -238,6 +239,106 @@ function parseCandidateCard(card) {
   return candidate;
 }
 
+
+function xpathForElement(element) {
+  if (element.id) return `//*[@id="${element.id}"]`;
+  const parts = [];
+  let current = element;
+  while (current && current.nodeType === Node.ELEMENT_NODE) {
+    let index = 1;
+    let sibling = current.previousElementSibling;
+    while (sibling) {
+      if (sibling.tagName === current.tagName) index += 1;
+      sibling = sibling.previousElementSibling;
+    }
+    parts.unshift(`${current.tagName.toLowerCase()}[${index}]`);
+    current = current.parentElement;
+  }
+  return `/${parts.join("/")}`;
+}
+
+function debugInfoForNode(node, index) {
+  const rect = node.getBoundingClientRect();
+  const text = cleanText(node.innerText);
+  const hasSalary = SALARY_RE.test(text);
+  const hasAge = AGE_RE.test(text);
+  const hasEducation = EDUCATION_KEYWORDS.some((word) => text.includes(word));
+  const hasGreetingButton = text.includes("打招呼");
+
+  return {
+    index,
+    tag: node.tagName.toLowerCase(),
+    className: node.className || "",
+    id: node.id || "",
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    textLength: text.length,
+    hasSalary,
+    hasAge,
+    hasEducation,
+    hasGreetingButton,
+    textPreview: text.slice(0, 300),
+    xpath: xpathForElement(node),
+  };
+}
+
+function clearDebugHighlights() {
+  document.querySelectorAll("[data-ai-recruit-debug-highlight='true']").forEach((node) => {
+    node.style.outline = node.dataset.aiRecruitPreviousOutline || "";
+    node.removeAttribute("data-ai-recruit-debug-highlight");
+    delete node.dataset.aiRecruitPreviousOutline;
+  });
+}
+
+function highlightDebugNodes(nodes) {
+  clearDebugHighlights();
+  nodes.forEach((node) => {
+    node.dataset.aiRecruitPreviousOutline = node.style.outline || "";
+    node.dataset.aiRecruitDebugHighlight = "true";
+    node.style.outline = "3px solid red";
+  });
+}
+
+function collectDOMDebug() {
+  const allNodes = Array.from(document.querySelectorAll(CANDIDATE_NODE_SELECTOR));
+  const suspiciousNodes = [];
+  const debugNodes = [];
+
+  for (const node of allNodes) {
+    if (isPluginArea(node)) continue;
+    const rawText = cleanText(node.innerText);
+    if (DEBUG_EXCLUDED_NAV_WORDS.some((word) => rawText.includes(word))) continue;
+    const info = debugInfoForNode(node, debugNodes.length + 1);
+    if (!info.hasSalary && !info.hasAge && !info.hasGreetingButton) continue;
+    suspiciousNodes.push(node);
+    debugNodes.push(info);
+    if (debugNodes.length >= 50) break;
+  }
+
+  highlightDebugNodes(suspiciousNodes);
+  console.log(`[AI Recruit] debug nodes found: ${debugNodes.length}`);
+  console.table(debugNodes.map((node) => ({
+    index: node.index,
+    tag: node.tag,
+    className: node.className,
+    size: `${node.width}x${node.height}`,
+    salary: node.hasSalary,
+    age: node.hasAge,
+    education: node.hasEducation,
+    greeting: node.hasGreetingButton,
+    textPreview: node.textPreview,
+    xpath: node.xpath,
+  })));
+
+  return {
+    ok: true,
+    debug_nodes_count: debugNodes.length,
+    debug_nodes: debugNodes,
+    page_title: document.title,
+    source_url: window.location.href,
+  };
+}
+
 function extractCandidateFromPage() {
   const cards = findCandidateCards();
   const candidates = cards.map(parseCandidateCard);
@@ -257,6 +358,11 @@ function extractCandidateFromPage() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "EXTRACT_CANDIDATE") {
     sendResponse(extractCandidateFromPage());
+    return true;
+  }
+
+  if (message && message.type === "DOM_DEBUG_FULL") {
+    sendResponse(collectDOMDebug());
     return true;
   }
 

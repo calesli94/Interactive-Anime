@@ -150,18 +150,20 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/analyze" `
 7. 点击“发送到本地服务分析”，应展示 mock 分析结果和打招呼话术。
 
 
-### 5. 测试 BOSS 推荐牛人候选人卡片抓取
+### 5. 测试 BOSS 推荐牛人 DOM 调试模式
+
+当前阶段优先确认真实候选人卡片 DOM，不继续盲猜 selector，也不依赖字段解析结果。
 
 1. 打开 BOSS 直聘“推荐牛人”列表页。
 2. 打开浏览器开发者工具 Console。
-3. 点击插件里的“抓取当前页面候选人信息”。
-4. Console 应看到类似日志：`[AI Recruit] candidate cards found: N`，其中 `N` 应大于等于 3。
-5. 插件弹窗应显示“本页识别到 N 个候选人”，默认展示第一张候选人卡片。
-6. 使用“上一个 / 下一个候选人”按钮切换候选人。
-7. 对第一张示例卡片，期望识别结果包括：姓名 `Dingyan Zhong`、薪资 `10-11K`、年龄 `24岁`、学历 `硕士`。
-8. 弹窗中的 `raw_text` 应只包含候选人白色卡片内容，不应包含左侧导航词，例如 `职位管理`、`深度搜索`、`项目外包`。
+3. 点击插件里的“输出候选人 DOM 调试”。
+4. Console 应看到类似日志：`[AI Recruit] debug nodes found: N`，其中 `N` 应大于 0。
+5. 页面中间的候选人疑似节点会出现红色描边，用于确认插件当前识别到的区域。
+6. 插件弹窗的“DOM 调试结果”区域会展示前 50 个疑似节点，包括：序号、tag、className、宽高、salary/age/education/greeting 命中情况、xpath 和 `textPreview`。
+7. `textPreview` 应能看到真实候选人卡片内容，例如候选人姓名、`10-15K`、`本科/硕士`、`打招呼`。
+8. 左侧导航不应出现红色描边；如果出现，请记录对应 `className`、`xpath`、宽高和 `textPreview`，用于下一轮精确排除。
 
-候选人卡片识别规则在 `browser_extension/content.js` 中实现：只遍历 `div/li/section/article` 节点，并要求文本同时包含“打招呼”、薪资格式、学历关键词和年龄格式；如果大节点包含多个候选人，会继续向下拆分，并通过文本 hash 和父子包含关系去重。
+DOM 调试规则在 `browser_extension/content.js` 中实现：遍历 `div/li/section/article`，收集节点尺寸、文本长度、薪资/年龄/学历/打招呼命中情况和 XPath；只输出命中薪资、年龄或“打招呼”的前 50 个节点，并在页面上用红框高亮这些节点。
 
 ## 已实现接口
 

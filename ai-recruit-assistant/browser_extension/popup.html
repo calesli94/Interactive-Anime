@@ -19,6 +19,7 @@
     <section class="card">
       <h2>2. 候选人信息</h2>
       <button id="extractBtn">抓取当前页面候选人信息</button>
+      <button id="domDebugBtn" type="button">输出候选人 DOM 调试</button>
       <p id="candidateCount">本页尚未识别候选人</p>
       <div class="pager">
         <button id="prevCandidateBtn" type="button">上一个</button>
@@ -42,6 +43,12 @@
       <button id="saveBtn">保存到本地人才库</button>
       <button id="analyzeBtn">发送到本地服务分析</button>
       <pre id="resultBox">等待分析结果...</pre>
+    </section>
+
+    <section class="card">
+      <h2>5. DOM 调试结果</h2>
+      <p id="debugSummary">尚未输出 DOM 调试。</p>
+      <div id="debugNodes" class="debug-list"></div>
     </section>
   </main>
 
