@@ -1,7 +1,13 @@
-console.log("[AI Recruit Assistant] content.js injected", location.href);
-
 (() => {
+  const LOADED_KEY = "__AI_RECRUIT_CONTENT_LOADED__";
   const LISTENER_KEY = "__AI_RECRUIT_ASSISTANT_ON_MESSAGE__";
+  const isRecommendPage = /\/web\/(chat|geek)\/recommend(?:[/?#]|$)/i.test(location.href);
+
+  if (window[LOADED_KEY]) return;
+  window[LOADED_KEY] = true;
+  console.log("[AI Recruit] content loaded once", location.href);
+  if (isRecommendPage) console.log("[AI Recruit] recommend scanner passive mode");
+
   if (window[LISTENER_KEY]) {
     try {
       chrome.runtime.onMessage.removeListener(window[LISTENER_KEY]);
