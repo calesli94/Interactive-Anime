@@ -401,24 +401,30 @@ async function refreshContext(){
     if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入','warn'); return; }
     state.pageContext=ctx;
     const detectedJob=ctx.job?.title ? ctx.job : null;
-    await restoreCurrentJobContext({force:false});
-    if(detectedJob){
-      if(state.currentJobContext?.title && titlesSimilar(detectedJob.title,state.currentJobContext.title) && !detectedJob.jd_complete){
-        state.job={...detectedJob,...state.currentJobContext,source:state.currentJobContext.source||'current_job_context',profile_status:'已使用当前岗位上下文缓存'};
-      }else if(state.job?.title && !titlesSimilar(detectedJob.title,state.job.title)){
-        state.job={...detectedJob,warning:`识别到新岗位：${detectedJob.title}，如需切换请加载/保存岗位库`};
-        feedback(`识别到新岗位：${detectedJob.title}，请确认是否切换`,'warn');
-      }else{
-        state.job=detectedJob;
+    if(ctx.page_type==='recommend_page'){
+      state.job=detectedJob||{};
+      state.jobProfileMatches=[];
+      setRecommendWorkflowStatus(detectedJob ? `推荐页岗位：${detectedJob.title||'-'} / ${detectedJob.city||'-'}` : '推荐页未识别岗位');
+    }else{
+      await restoreCurrentJobContext({force:false});
+      if(detectedJob){
+        if(state.currentJobContext?.title && titlesSimilar(detectedJob.title,state.currentJobContext.title) && !detectedJob.jd_complete){
+          state.job={...detectedJob,...state.currentJobContext,source:state.currentJobContext.source||'current_job_context',profile_status:'已使用当前岗位上下文缓存'};
+        }else if(state.job?.title && !titlesSimilar(detectedJob.title,state.job.title)){
+          state.job={...detectedJob,warning:`识别到新岗位：${detectedJob.title}，如需切换请加载/保存岗位库`};
+          feedback(`识别到新岗位：${detectedJob.title}，请确认是否切换`,'warn');
+        }else{
+          state.job=detectedJob;
+        }
       }
+      await loadStoredJobIfMissing();
+      if(state.job?.title && !hasJobDetail()) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
     }
-    await loadStoredJobIfMissing();
-    if(state.job?.title && !hasJobDetail()) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
     state.candidate=ctx.candidate||{};
     state.chat=ctx.chat||{};
     state.contextId=ctx.context_id||'';
-    await saveJobIfAvailable();
-    if(state.job?.title && state.job?.jd_complete && state.job?.source==='job_detail_modal') await saveJobProfile();
+    if(ctx.page_type!=='recommend_page') await saveJobIfAvailable();
+    if(ctx.page_type!=='recommend_page' && state.job?.title && state.job?.jd_complete && state.job?.source==='job_detail_modal') await saveJobProfile();
     renderContext();
     const warnings=[];
     const warningText=(ctx.warnings||[]).join('；');
@@ -678,6 +684,59 @@ async function quickScoreScannedCandidates(candidates){
   return scored;
 }
 
+
+function setRecommendWorkflowStatus(text){ const el=$('recommend-workflow-status'); if(el) el.textContent=text||'-'; }
+
+async function extractRecommendJobWorkflow(){
+  feedback('正在识别推荐页岗位...');
+  const res=await sendToContent({type:'EXTRACT_RECOMMEND_JOB'});
+  if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'推荐页岗位识别失败'); feedback(res?.error||'推荐页岗位识别失败','warn'); return; }
+  state.job=res.job||{title:res.title||'',city:res.city||'',salary:res.salary||'',source:'recommend_job_dropdown',jd_complete:false};
+  state.pageContext={...(state.pageContext||{}),page_type:'recommend_page',url:state.pageContext?.url||res.url||'',job:state.job};
+  state.jobProfileMatches=[];
+  renderJob();
+  setRecommendWorkflowStatus(`已识别推荐页岗位：${state.job.title||'-'} / ${state.job.city||'-'} / ${state.job.salary||'-'}`);
+  feedback('推荐页岗位已识别（未使用缓存岗位）');
+}
+
+async function scanRecommendListWorkflow(){
+  feedback('正在扫描当前推荐列表...');
+  const res=await sendToContent({type:'SCAN_RECOMMEND_LIST'});
+  if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'推荐列表扫描失败'); feedback(res?.error||'推荐列表扫描失败','warn'); return; }
+  state.scannedPageType=res.page_type||'recommend_page';
+  state.scannedCandidates=await quickScoreScannedCandidates(res.candidates||[]);
+  renderScannedCandidates();
+  setRecommendWorkflowStatus(`推荐列表扫描完成：${state.scannedCandidates.length} 位候选人`);
+  feedback(`推荐列表扫描完成：${state.scannedCandidates.length} 位候选人`);
+}
+
+async function extractRecommendResumeWorkflow(){
+  feedback('正在识别当前打开的推荐页简历...');
+  const res=await sendToContent({type:'EXTRACT_RECOMMEND_RESUME_MODAL'});
+  if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'推荐页简历识别失败'); feedback(res?.error||'推荐页简历识别失败','warn'); return; }
+  state.candidate=res.candidate||{};
+  state.pageContext={...(state.pageContext||{}),page_type:'recommend_page',candidate:state.candidate};
+  renderCandidate();
+  setRecommendWorkflowStatus(`已识别当前简历：${state.candidate.name||'-'} / ${state.candidate.expected_position||state.candidate.current_title||'-'}`);
+  feedback('当前打开简历已识别');
+}
+
+async function analyzeRecommendResumeWorkflow(){
+  if(!state.candidate?.profile_complete) await extractRecommendResumeWorkflow();
+  if(!state.job?.title) await extractRecommendJobWorkflow();
+  await analyzeCandidate();
+}
+
+async function generateRecommendGreetingWorkflow(){
+  await generateMessages();
+  setRecommendWorkflowStatus('打招呼话术已生成，请手动复制；不会自动点击打招呼或自动发送');
+}
+
+async function saveRecommendCandidateWorkflow(){
+  if(!state.candidate?.name) await extractRecommendResumeWorkflow();
+  await saveCandidateAsset();
+}
+
 async function scanCandidateList(){
   feedback('正在扫描当前页候选人...');
   const res=await sendToContent({type:'EXTRACT_CANDIDATE_LIST'});
@@ -917,6 +976,12 @@ function bind(){
   const saveJobAssetBtn=$('save-job-asset-btn'); if(saveJobAssetBtn) saveJobAssetBtn.onclick=()=>saveJobAsset();
   const viewMatchHistoryBtn=$('view-match-history-btn'); if(viewMatchHistoryBtn) viewMatchHistoryBtn.onclick=viewMatchHistory;
   const scanCandidatesBtn=$('scan-candidates-btn'); if(scanCandidatesBtn) scanCandidatesBtn.onclick=scanCandidateList;
+  const recommendExtractJobBtn=$('recommend-extract-job-btn'); if(recommendExtractJobBtn) recommendExtractJobBtn.onclick=extractRecommendJobWorkflow;
+  const recommendScanListBtn=$('recommend-scan-list-btn'); if(recommendScanListBtn) recommendScanListBtn.onclick=scanRecommendListWorkflow;
+  const recommendExtractResumeBtn=$('recommend-extract-resume-btn'); if(recommendExtractResumeBtn) recommendExtractResumeBtn.onclick=extractRecommendResumeWorkflow;
+  const recommendAnalyzeResumeBtn=$('recommend-analyze-resume-btn'); if(recommendAnalyzeResumeBtn) recommendAnalyzeResumeBtn.onclick=analyzeRecommendResumeWorkflow;
+  const recommendGenerateMessageBtn=$('recommend-generate-message-btn'); if(recommendGenerateMessageBtn) recommendGenerateMessageBtn.onclick=generateRecommendGreetingWorkflow;
+  const recommendSaveCandidateBtn=$('recommend-save-candidate-btn'); if(recommendSaveCandidateBtn) recommendSaveCandidateBtn.onclick=saveRecommendCandidateWorkflow;
   const saveScannedBtn=$('save-scanned-candidates-btn'); if(saveScannedBtn) saveScannedBtn.onclick=saveScannedCandidates;
   const clearScannedBtn=$('clear-scanned-candidates-btn'); if(clearScannedBtn) clearScannedBtn.onclick=clearScannedCandidates;
   const saveProfileBtn=$('save-job-profile-btn'); if(saveProfileBtn) saveProfileBtn.onclick=saveJobProfile;

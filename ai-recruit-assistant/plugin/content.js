@@ -802,6 +802,7 @@
   function extractJob() {
     const debug = { job_detail_modal_candidates: [], chat_job_card_candidates: [], job_area_candidates: [], active_chat_panel_candidates: [], rejected_chat_list_blocks: [], job_parse_result: null };
     try {
+      if (detectPageType() === "recommend_page") return extractRecommendJob();
       debug.rejected_chat_list_blocks = rejectedChatListBlocks().slice(0, 20).map((node) => debugNode(node, 0, "rejected_chat_list"));
       const isChatPage = /\/web\/chat/.test(location.href) || activeChatPanelCandidates().length > 0;
       const panelItems = isChatPage ? activeChatPanelCandidates() : [];
@@ -1584,14 +1585,12 @@
     const s = recommendCardSignals(node);
     if (s.rect.left <= 250) return "不在主内容区";
     if (s.rect.width <= 600) return "宽度小于等于600";
-    if (s.rect.height <= 100) return "高度小于等于100";
+    if (s.rect.height <= 90) return "高度小于等于90";
     if (s.rect.height > 850) return "高度过大，疑似列表父容器";
     if (!s.one || s.one.length < 30) return "文本过短";
     if (s.one.length > 2600) return "文本过长，疑似列表父容器";
     if (!s.hasAge) return "缺少年龄";
-    if (!s.hasExperience) return "缺少年限";
     if (!s.hasEducation) return "缺少学历";
-    if (!(s.hasExpected || s.hasSalary)) return "缺少期望或薪资";
     if (!s.name) return "缺少姓名";
     return "";
   }
@@ -1724,6 +1723,141 @@
     return { ok: true, page_type: debug.page_type, candidates, debug, candidate_scan_debug: debug, candidate_list_scan_debug: debug, recommend_candidate_scan_debug };
   }
 
+
+  function parseRecommendJobDropdownText(text) {
+    const raw = oneLine(text).replace(/[_｜|]+/g, " _ ").replace(/\s+/g, " ").trim();
+    const salary = (raw.match(SALARY_RE) || [""])[0];
+    const city = (raw.match(CITY_RE) || [""])[0];
+    let title = raw;
+    if (salary) title = title.replace(salary, " ");
+    if (city) title = title.replace(city, " ");
+    title = title
+      .replace(/推荐牛人|切换职位|全部职位|职位|岗位|招聘中|急招|请选择/g, " ")
+      .replace(/[_｜|·,，/\\]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const titleParts = title.split(/\s+/).filter((part) => part && !CITY_RE.test(part) && !SALARY_RE.test(part));
+    title = titleParts[0] || title;
+    if (!isValidJobTitle(title) && titleParts.length > 1) title = titleParts.slice(0, 2).join("");
+    return { title: validateJobTitle(title) ? title : "", city: city || "", salary: salary || "", source: "recommend_job_dropdown", raw_text: raw };
+  }
+
+  function recommendJobDropdownCandidates() {
+    return queryVisible(["button", "[role='button']", "[class*='select']", "[class*='dropdown']", "[class*='job']", "span", "div"])
+      .map((node) => ({ node, text: oneLine(textOf(node)), rect: node.getBoundingClientRect() }))
+      .filter((item) => item.text.length >= 4 && item.text.length <= 180)
+      .filter((item) => item.rect.left > 160 && item.rect.top >= 0 && item.rect.top < Math.max(320, window.innerHeight * 0.35))
+      .map((item) => {
+        const parsed = parseRecommendJobDropdownText(item.text);
+        let score = 0;
+        if (parsed.title) score += 40;
+        if (parsed.city) score += 25;
+        if (parsed.salary) score += 30;
+        if (/[_｜|]/.test(item.text)) score += 10;
+        if (/职位|岗位|招聘|推荐/.test(item.text)) score += 5;
+        if (/候选人|牛人|岁|本科|大专|硕士|博士|打招呼/.test(item.text)) score -= 40;
+        return { ...item, parsed, score };
+      })
+      .filter((item) => item.score >= 55)
+      .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.text.length - b.text.length);
+  }
+
+  function extractRecommendJob() {
+    try {
+      if (detectPageType() !== "recommend_page") return { ok: false, job: emptyJob("recommend_job_dropdown"), error: "当前页面不是推荐牛人页" };
+      const candidates = recommendJobDropdownCandidates();
+      const parsed = candidates[0]?.parsed || { title: "", city: "", salary: "", source: "recommend_job_dropdown", raw_text: "" };
+      const job = {
+        ...emptyJob("recommend_job_dropdown"),
+        title: parsed.title || "",
+        city: parsed.city || "",
+        salary: parsed.salary || "",
+        raw_text: parsed.raw_text || "",
+        jd_complete: false,
+        warning: parsed.title ? "推荐页仅识别到岗位下拉框信息，未使用缓存岗位JD" : "未识别推荐页顶部岗位下拉框",
+      };
+      return {
+        ok: Boolean(job.title || job.city || job.salary),
+        job,
+        title: job.title,
+        city: job.city,
+        salary: job.salary,
+        source: "recommend_job_dropdown",
+        error: job.title ? "" : "未识别推荐页顶部岗位下拉框",
+        debug: { candidates: candidates.slice(0, 10).map((item) => ({ ...debugNode(item.node, item.score, "recommend_job_dropdown"), parsed: item.parsed })) },
+      };
+    } catch (e) {
+      return { ok: false, job: emptyJob("recommend_job_dropdown"), error: `推荐页岗位识别异常：${e.message || e}` };
+    }
+  }
+
+  function scanRecommendList() {
+    try {
+      if (detectPageType() !== "recommend_page") return { ok: false, page_type: detectPageType(), candidates: [], error: "当前页面不是推荐牛人页" };
+      const scan = scanRecommendCandidateCards();
+      const candidates = (scan.accepted || []).map((item) => {
+        const c = cardCandidateFromNode(item, "recommend_page");
+        return {
+          name: c.name || "",
+          age: c.age || null,
+          experience_years_text: c.experience_years_text || "",
+          education: c.education || "",
+          city: c.city || "",
+          expected_position: c.expected_position || c.current_title || "",
+          salary_expectation: c.salary_expectation || "",
+          skills: c.skills || [],
+          companies: c.companies || [],
+          schools: c.schools || [],
+          highlights: c.highlights || [],
+          raw_text: c.raw_text || "",
+          source: "recommend_card",
+          source_url: c.source_url || location.href,
+          profile_complete: false,
+        };
+      }).filter((candidate) => candidate.name || candidate.raw_text);
+      return { ok: true, page_type: "recommend_page", candidates, count: candidates.length, debug: scan.debug };
+    } catch (e) {
+      return { ok: false, page_type: "recommend_page", candidates: [], error: `推荐列表扫描异常：${e.message || e}` };
+    }
+  }
+
+  function extractRecommendResumeModal() {
+    try {
+      if (detectPageType() !== "recommend_page") return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "当前页面不是推荐牛人页" };
+      const item = resumeModalCandidates()[0];
+      if (!item) return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "未检测到已打开的推荐页简历弹窗", debug: { resume_modal_candidates: [] } };
+      const raw = cleanText(textOf(item.node));
+      const parsed = sourceCandidateFromRaw(raw, "recommend_resume_modal", raw);
+      const exp = parseExperience(raw);
+      const candidate = {
+        name: parsed.name || parseNameFromText(raw) || "",
+        age: parsed.age || parseAge(raw),
+        experience_years: parsed.experience_years ?? exp.experience_years,
+        education: parsed.education || parseEducation(raw),
+        city: parsed.city || parsed.expected_city || (raw.match(CITY_RE) || [""])[0],
+        expected_position: parsed.expected_position || parsed.current_title || "",
+        salary_expectation: parsed.salary_expectation || (raw.match(SALARY_RE) || [""])[0],
+        skills: parsed.skills || [],
+        companies: parsed.companies || [],
+        work_experiences: parsed.work_experiences || [],
+        projects: parsed.projects || [],
+        styles: parsed.styles || [],
+        raw_text: raw.slice(0, 5000),
+        source: "recommend_resume_modal",
+        source_url: location.href,
+        profile_complete: true,
+        structured_resume: parsed.structured_resume || null,
+        project_keywords: parsed.project_keywords || [],
+        company_keywords: parsed.company_keywords || [],
+        style_keywords: parsed.style_keywords || [],
+      };
+      return { ok: Boolean(candidate.name || candidate.raw_text), candidate, debug: { modal: debugNode(item.node, item.score, item.reason) } };
+    } catch (e) {
+      return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: `推荐页简历弹窗识别异常：${e.message || e}` };
+    }
+  }
+
+
   function detectPageType() {
     const body = textOf(document.body).slice(0, 8000);
     const href = location.href.toLowerCase();
@@ -1753,16 +1887,20 @@
     try {
       const pageType = detectPageType();
       if (pageType === "recommend_page") {
+        const recommendJob = extractRecommendJob();
+        const recommendModal = extractRecommendResumeModal();
+        const job = recommendJob.job || emptyJob("recommend_job_dropdown");
+        const candidate = recommendModal.ok ? recommendModal.candidate : emptyCandidate("recommend_page");
         return {
           ok: true,
           page_type: pageType,
           url: location.href,
           title: document.title,
-          job: emptyJob("recommend_page"),
-          candidate: emptyCandidate("recommend_page"),
+          job,
+          candidate,
           chat: { candidate_name: "", messages_text: "", latest_messages: [], source: "recommend_page" },
-          context_id: simpleHash(`${document.title}|${location.href}`),
-          warnings: [],
+          context_id: simpleHash(`${job.title || document.title}|${candidate.name || ""}|${location.href}`),
+          warnings: recommendJob.ok ? [] : [recommendJob.error || "未识别推荐页岗位"],
           recommend_job_debug: recommendPageJobDebug(),
         };
       }
@@ -1877,16 +2015,16 @@
       const pageType = detectPageType();
       if (pageType === "recommend_page") {
         console.log("[AI Recruit] DEBUG_DOM recommend_page branch");
-        const candidateList = extractCandidateList();
         return {
           ok: true,
           url: location.href,
           title: document.title,
           page_type: "recommend_page",
-          page_router_debug: { detected_page_type: pageType, url: location.href },
-          recommend_job_debug: recommendPageJobDebug(),
-          recommend_candidate_scan_debug: candidateList.recommend_candidate_scan_debug,
-          resume_modal_debug: resumeModalCandidates().slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+          recommend_page_debug: {
+            parsed_job: extractRecommendJob(),
+            list_scan: scanRecommendList(),
+            modal_scan: extractRecommendResumeModal(),
+          },
         };
       }
       const job = extractJob();
@@ -1956,8 +2094,11 @@
       else if (message?.type === "DEBUG_DOM") sendResponse(debugDom());
       else if (message?.type === "EXTRACT_PAGE_CONTEXT") sendResponse(extractPageContext());
       else if (message?.type === "EXTRACT_JOB") sendResponse(extractJob());
+      else if (message?.type === "EXTRACT_RECOMMEND_JOB") sendResponse(extractRecommendJob());
       else if (message?.type === "EXTRACT_CANDIDATE") sendResponse(extractCandidate());
       else if (message?.type === "EXTRACT_CANDIDATE_LIST") sendResponse(extractCandidateList());
+      else if (message?.type === "SCAN_RECOMMEND_LIST") sendResponse(scanRecommendList());
+      else if (message?.type === "EXTRACT_RECOMMEND_RESUME_MODAL") sendResponse(extractRecommendResumeModal());
       else if (message?.type === "EXTRACT_CHAT") sendResponse(extractChat());
       else if (message?.type === "FILL_GREETING") sendResponse(fillGreeting(message.text || ""));
       else sendResponse({ ok: false, error: `未知消息类型: ${message?.type || "empty"}`, debug: { url: location.href, title: document.title } });
