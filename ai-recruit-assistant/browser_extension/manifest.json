@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "AI Recruit Assistant MVP",
+  "version": "0.1.0",
+  "description": "BOSS 直聘候选人页面招聘辅助工具 MVP。",
+  "action": {
+    "default_title": "AI 招聘助手",
+    "default_popup": "popup.html"
+  },
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "http://127.0.0.1:8787/*",
+    "http://localhost:8787/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

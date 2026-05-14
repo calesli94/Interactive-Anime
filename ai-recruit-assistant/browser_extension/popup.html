@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 招聘助手</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="popup">
+    <h1>AI 招聘助手 MVP</h1>
+
+    <section class="card">
+      <h2>1. 本地服务</h2>
+      <p id="serviceStatus">尚未检查</p>
+      <button id="checkServiceBtn">检查本地服务状态</button>
+    </section>
+
+    <section class="card">
+      <h2>2. 候选人信息</h2>
+      <button id="extractBtn">抓取当前页面候选人信息</button>
+      <p><strong>姓名：</strong><span id="candidateName">-</span></p>
+      <p><strong>职位：</strong><span id="candidateTitle">-</span></p>
+      <textarea id="candidateText" placeholder="抓取到的候选人文本会显示在这里，也可以手动修改。"></textarea>
+    </section>
+
+    <section class="card">
+      <h2>3. 岗位要求</h2>
+      <textarea id="jobRequirement">Python FastAPI SQLite 招聘工具，有浏览器插件或 Web 开发经验优先。</textarea>
+    </section>
+
+    <section class="card">
+      <h2>4. 分析与保存</h2>
+      <button id="saveBtn">保存到本地人才库</button>
+      <button id="analyzeBtn">发送到本地服务分析</button>
+      <pre id="resultBox">等待分析结果...</pre>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
