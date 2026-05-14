@@ -1583,7 +1583,7 @@
     if (isCandidateScanExcludedElement(node)) return "侧栏/导航/筛选/广告区域";
     const s = recommendCardSignals(node);
     if (s.rect.left <= 250) return "不在主内容区";
-    if (s.rect.width <= 700) return "宽度小于等于700";
+    if (s.rect.width <= 600) return "宽度小于等于600";
     if (s.rect.height <= 100) return "高度小于等于100";
     if (s.rect.height > 850) return "高度过大，疑似列表父容器";
     if (!s.one || s.one.length < 30) return "文本过短";
@@ -1613,9 +1613,13 @@
 
   function scanRecommendCandidateCards() {
     const nodes = queryVisible(["li", "article", "section", "div"]);
+    const visibleMainBlocks = nodes.filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.left > 250 && rect.width > 600 && rect.height > 80 && isVisible(node) && isInViewport(node) && !isExtensionDom(node);
+    });
     const candidates = [];
     const rejected = [];
-    for (const node of nodes) {
+    for (const node of visibleMainBlocks) {
       const scored = scoreRecommendCard(node);
       if (scored.score >= 60) candidates.push({ node, ...scored });
       else if (rejected.length < 80) rejected.push({ node, ...scored });
@@ -1634,12 +1638,14 @@
     accepted.sort((a, b) => a.node.getBoundingClientRect().top - b.node.getBoundingClientRect().top);
     const debug = {
       page_type: detectCandidateListPageType() || detectPageType(),
+      total_visible_blocks: visibleMainBlocks.length,
       possible_card_containers: candidates.length,
       accepted_count: accepted.length,
       rejected_count: rejected.length,
       accepted_previews: accepted.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
       rejected_previews: rejected.slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
     };
+    console.log("[AI Recruit] scanRecommendCandidateCards accepted", accepted.length);
     return { accepted, rejected, debug };
   }
 
@@ -1692,6 +1698,7 @@
       url: location.href,
       total_greeting_buttons: totalButtons || 0,
       total_buttons: totalButtons || 0,
+      total_visible_blocks: recommendDebug.total_visible_blocks ?? 0,
       possible_card_containers: recommendDebug.possible_card_containers ?? ranked.length,
       candidate_containers_found: accepted.length,
       accepted_candidates: candidates.length,
@@ -1706,6 +1713,7 @@
     };
     const recommend_candidate_scan_debug = {
       page_type: debug.page_type,
+      total_visible_blocks: recommendDebug.total_visible_blocks ?? debug.total_visible_blocks ?? 0,
       possible_card_containers: debug.possible_card_containers,
       accepted_count: debug.accepted_count,
       rejected_count: debug.rejected_count,
@@ -1728,8 +1736,36 @@
     return "unknown";
   }
 
+  function recommendPageJobDebug() {
+    const blocks = queryVisible(["button", "span", "div", "section"])
+      .map((node) => ({ node, text: oneLine(textOf(node)), rect: node.getBoundingClientRect() }))
+      .filter((item) => item.text.length >= 2 && item.text.length <= 160)
+      .filter((item) => item.rect.left > 180 && item.rect.top < 260)
+      .filter((item) => /职位|岗位|招聘|推荐牛人|搜索/.test(item.text))
+      .slice(0, 12);
+    return {
+      candidates: blocks.map((item) => ({ ...debugNode(item.node, 0, "recommend_job_context"), text: item.text })),
+      selected_text: blocks.find((item) => /职位|岗位/.test(item.text))?.text || "",
+    };
+  }
+
   function extractPageContext() {
     try {
+      const pageType = detectPageType();
+      if (pageType === "recommend_page") {
+        return {
+          ok: true,
+          page_type: pageType,
+          url: location.href,
+          title: document.title,
+          job: emptyJob("recommend_page"),
+          candidate: emptyCandidate("recommend_page"),
+          chat: { candidate_name: "", messages_text: "", latest_messages: [], source: "recommend_page" },
+          context_id: simpleHash(`${document.title}|${location.href}`),
+          warnings: [],
+          recommend_job_debug: recommendPageJobDebug(),
+        };
+      }
       const jobRes = extractJob();
       const candidateRes = extractCandidate();
       const chatRes = extractChat();
@@ -1737,13 +1773,13 @@
       if (!jobRes.ok) warnings.push("未识别当前沟通岗位，请确认聊天中有岗位卡或手动配置岗位");
       if (!candidateRes.ok) warnings.push("未识别候选人姓名，请打开具体候选人聊天或在线简历");
       if (candidateRes.warning) warnings.push(candidateRes.warning);
-      if (!chatRes.ok && detectPageType() === "chat_page") warnings.push(chatRes.error || "未检测到当前聊天窗口");
+      if (!chatRes.ok && pageType === "chat_page") warnings.push(chatRes.error || "未检测到当前聊天窗口");
       const job = jobRes.job || emptyJob();
       const candidate = candidateRes.candidate || emptyCandidate();
       const base = candidate.name ? `${candidate.name}|${job.title || ""}|${location.href}` : `${document.title}|${location.href}`;
       return {
         ok: true,
-        page_type: detectPageType(),
+        page_type: pageType,
         url: location.href,
         title: document.title,
         job,
@@ -1838,6 +1874,21 @@
 
   function debugDom() {
     try {
+      const pageType = detectPageType();
+      if (pageType === "recommend_page") {
+        console.log("[AI Recruit] DEBUG_DOM recommend_page branch");
+        const candidateList = extractCandidateList();
+        return {
+          ok: true,
+          url: location.href,
+          title: document.title,
+          page_type: "recommend_page",
+          page_router_debug: { detected_page_type: pageType, url: location.href },
+          recommend_job_debug: recommendPageJobDebug(),
+          recommend_candidate_scan_debug: candidateList.recommend_candidate_scan_debug,
+          resume_modal_debug: resumeModalCandidates().slice(0, 10).map((item) => debugNode(item.node, item.score, item.reason)),
+        };
+      }
       const job = extractJob();
       const candidate = extractCandidate();
       const chat = extractChat();
