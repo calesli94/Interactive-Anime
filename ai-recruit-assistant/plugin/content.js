@@ -1579,16 +1579,19 @@
 
   function rejectRecommendCardReason(node) {
     if (!node || !(node instanceof Element)) return "不是元素";
-    if (!isVisible(node) || !isInViewport(node)) return "隐藏或不在可视区";
     if (isExtensionDom(node)) return "插件DOM";
-    if (isCandidateScanExcludedElement(node)) return "侧栏/导航/筛选/广告区域";
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0) return "display/visibility/opacity隐藏";
     const s = recommendCardSignals(node);
-    if (s.rect.left <= 250) return "不在主内容区";
-    if (s.rect.width <= 600) return "宽度小于等于600";
-    if (s.rect.height <= 90) return "高度小于等于90";
-    if (s.rect.height > 850) return "高度过大，疑似列表父容器";
+    const hasCandidatePattern = recommendHasCandidatePattern(s.one) || (s.hasAge && s.hasEducation);
+    if (!hasCandidatePattern && !isInViewport(node)) return "不在可视区且无候选人文本特征";
+    if (!hasCandidatePattern && isCandidateScanExcludedElement(node)) return "侧栏/导航/筛选区域";
+    if (!hasCandidatePattern && s.rect.left <= 250) return "不在主内容区";
+    if (!hasCandidatePattern && s.rect.width <= 600) return "宽度小于等于600";
+    if (!hasCandidatePattern && s.rect.height <= 90) return "高度小于等于90";
+    if (s.rect.height > 1200 && s.one.length > 6000) return "高度和文本过大，疑似整页父容器";
     if (!s.one || s.one.length < 30) return "文本过短";
-    if (s.one.length > 2600) return "文本过长，疑似列表父容器";
+    if (s.one.length > 6000) return "文本过长，疑似整页父容器";
     if (!s.hasAge) return "缺少年龄";
     if (!s.hasEducation) return "缺少学历";
     if (!s.name) return "缺少姓名";
@@ -1611,11 +1614,19 @@
   }
 
   function scanRecommendCandidateCards() {
-    const nodes = queryVisible(["li", "article", "section", "div"]);
-    const visibleMainBlocks = nodes.filter((node) => {
+    const nodes = Array.from(document.querySelectorAll("li, article, section, div")).slice(0, 3000).filter((node) => {
+      if (!(node instanceof Element) || isExtensionDom(node)) return false;
+      const text = oneLine(node.innerText || node.textContent || "");
+      if (!text || text.length < 20) return false;
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0) return false;
       const rect = node.getBoundingClientRect();
-      return rect.left > 250 && rect.width > 600 && rect.height > 80 && isVisible(node) && isInViewport(node) && !isExtensionDom(node);
+      const hasCandidatePattern = recommendHasCandidatePattern(text) || (/\d{2}\s*岁/.test(text) && /本科|大专|硕士|博士/.test(text));
+      const mainRect = rect.left > 250 && rect.width > 500 && rect.height > 50;
+      const modalOrTransformed = /fixed|absolute/.test(style.position) || (Number.parseInt(style.zIndex, 10) > 10) || style.transform !== "none";
+      return hasCandidatePattern || mainRect || modalOrTransformed;
     });
+    const visibleMainBlocks = nodes;
     const candidates = [];
     const rejected = [];
     for (const node of visibleMainBlocks) {
@@ -1724,6 +1735,225 @@
   }
 
 
+
+  const RECOMMEND_CANDIDATE_START_RE = /([\u4e00-\u9fa5]{2,6})\s+(刚刚活跃|今日活跃|本周活跃|3日内活跃)/g;
+  const RECOMMEND_SALARY_RE = /\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议/;
+
+  function recommendBodyText() {
+    return cleanText(document.body?.innerText || document.body?.textContent || "");
+  }
+
+  function recommendHasCandidatePattern(text) {
+    return /[\u4e00-\u9fa5]{2,6}\s+(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)/.test(oneLine(text));
+  }
+
+  function recommendReconPreview(node, text = "", style = null) {
+    const rect = node.getBoundingClientRect();
+    const computed = style || getComputedStyle(node);
+    return {
+      tag: (node.tagName || "").toLowerCase(),
+      className: String(node.className || "").slice(0, 180),
+      id: node.id || "",
+      rect: rectInfo(node),
+      display: computed.display || "",
+      visibility: computed.visibility || "",
+      opacity: computed.opacity || "",
+      position: computed.position || "",
+      zIndex: computed.zIndex || "",
+      text_preview: oneLine(text || node.textContent || "").slice(0, 260),
+    };
+  }
+
+  function recommendDomRecon() {
+    const bodyText = recommendBodyText();
+    const all = Array.from(document.querySelectorAll("body *")).slice(0, 3000);
+    const textBlocks = [];
+    const largeRectBlocks = [];
+    const modalLikeBlocks = [];
+    const buttonTexts = [];
+    const scrollContainers = [];
+    let fixedOrModalBlocksCount = 0;
+    for (const node of all) {
+      if (!(node instanceof Element) || isExtensionDom(node)) continue;
+      const text = cleanText(node.textContent || "");
+      if (!text) continue;
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      const zIndex = Number.parseInt(style.zIndex, 10);
+      const positioned = style.position === "fixed" || style.position === "absolute";
+      const highZ = Number.isFinite(zIndex) && zIndex > 10;
+      const preview = () => recommendReconPreview(node, text, style);
+      textBlocks.push({ node, text, rect, preview });
+      if (rect.width > 500 && text.length > 20) largeRectBlocks.push({ node, text, rect, preview });
+      if (positioned || highZ) {
+        fixedOrModalBlocksCount += 1;
+        if (text.length > 20 || rect.width > 300 || rect.height > 120) modalLikeBlocks.push({ node, text, rect, preview });
+      }
+      if ((node.tagName || "").toLowerCase() === "button" || node.getAttribute("role") === "button") {
+        const buttonText = oneLine(text);
+        if (buttonText) buttonTexts.push(buttonText.slice(0, 120));
+      }
+      if (node.scrollHeight > node.clientHeight + 100) scrollContainers.push({ node, text, rect, preview });
+    }
+    const byTop = (a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left;
+    const byArea = (a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height);
+    return {
+      body_text_preview: bodyText.slice(0, 1000),
+      document_element_text_length: cleanText(document.documentElement?.innerText || document.documentElement?.textContent || "").length,
+      body_text_length: bodyText.length,
+      all_visible_text_blocks_count: textBlocks.length,
+      large_rect_blocks_count: largeRectBlocks.length,
+      fixed_or_modal_blocks_count: fixedOrModalBlocksCount,
+      top_text_blocks: textBlocks.sort(byTop).slice(0, 20).map((item) => item.preview()),
+      large_rect_blocks: largeRectBlocks.sort(byArea).slice(0, 20).map((item) => item.preview()),
+      modal_like_blocks: modalLikeBlocks.sort(byArea).slice(0, 20).map((item) => item.preview()),
+      button_texts: uniq(buttonTexts).slice(0, 80),
+      scroll_containers: scrollContainers.sort(byArea).slice(0, 20).map((item) => item.preview()),
+    };
+  }
+
+  function splitRecommendCandidateSegments(text) {
+    const raw = cleanText(text || "");
+    const matches = Array.from(raw.matchAll(RECOMMEND_CANDIDATE_START_RE));
+    const segments = [];
+    for (let i = 0; i < matches.length; i += 1) {
+      const start = matches[i].index || 0;
+      const end = i + 1 < matches.length ? matches[i + 1].index : raw.length;
+      const segment = raw.slice(start, end).trim();
+      if (segment) segments.push({ name: matches[i][1], active_status: matches[i][2], raw_text: segment });
+    }
+    return segments;
+  }
+
+  function recommendTextCandidateFromSegment(segment, source = "recommend_text_fallback") {
+    const raw = cleanText(typeof segment === "string" ? segment : segment.raw_text);
+    const headerName = typeof segment === "object" ? segment.name : "";
+    const parsed = sourceCandidateFromRaw(raw, source, raw);
+    const exp = parseExperience(raw);
+    return {
+      name: parsed.name || headerName || parseNameFromText(raw) || "",
+      age: parsed.age || parseAge(raw),
+      experience_years: parsed.experience_years ?? exp.experience_years,
+      experience_years_text: parsed.experience_years_text || exp.experience_years_text || "",
+      education: parsed.education || parseEducation(raw),
+      city: parsed.city || parsed.expected_city || (raw.match(CITY_RE) || [""])[0],
+      expected_position: parsed.expected_position || parsed.current_title || "",
+      salary_expectation: parsed.salary_expectation || (raw.match(RECOMMEND_SALARY_RE) || raw.match(SALARY_RE) || [""])[0],
+      skills: parsed.skills || [],
+      companies: parsed.companies || extractCompaniesFromCard(raw),
+      schools: extractSchoolsFromCard(raw),
+      highlights: extractHighlightsFromCard(raw),
+      raw_text: raw.slice(0, 5000),
+      source,
+      source_url: location.href,
+      profile_complete: source === "recommend_resume_text_fallback",
+      work_experiences: parsed.work_experiences || [],
+      projects: parsed.projects || [],
+      styles: parsed.styles || [],
+      structured_resume: parsed.structured_resume || null,
+      project_keywords: parsed.project_keywords || [],
+      company_keywords: parsed.company_keywords || [],
+      style_keywords: parsed.style_keywords || [],
+    };
+  }
+
+  function scanRecommendListTextFallback() {
+    const segments = splitRecommendCandidateSegments(recommendBodyText());
+    const candidates = [];
+    for (const segment of segments) {
+      const raw = segment.raw_text;
+      const acceptable = /\d{2}\s*岁/.test(raw) && /本科|大专|硕士|博士/.test(raw) && (/期望/.test(raw) || RECOMMEND_SALARY_RE.test(raw));
+      if (!acceptable) continue;
+      const candidate = recommendTextCandidateFromSegment(segment, "recommend_text_fallback");
+      candidate.profile_complete = false;
+      if (candidate.name || candidate.raw_text) candidates.push(candidate);
+      if (candidates.length >= 50) break;
+    }
+    return {
+      candidates,
+      debug: {
+        strategy: "body_innerText_candidate_segmentation",
+        segments_found: segments.length,
+        accepted_count: candidates.length,
+        segment_previews: segments.slice(0, 20).map((item) => ({ name: item.name, active_status: item.active_status, text_preview: oneLine(item.raw_text).slice(0, 260) })),
+      },
+    };
+  }
+
+  function parseRecommendJobFromText(text) {
+    const raw = cleanText(text || "");
+    const patterns = [
+      /([^\n\r_｜|]{2,30})\s*[_｜|\s]+(北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京)\s*[_｜|\s]+(\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/,
+      /([^\n\r_｜|]{2,30})\s+(北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京)\s+(\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/,
+    ];
+    for (const pattern of patterns) {
+      const match = raw.match(pattern);
+      if (!match) continue;
+      const title = oneLine(match[1]).replace(/推荐牛人|切换职位|全部职位|岗位|职位/g, "").trim();
+      if (!validateJobTitle(title)) continue;
+      return { title, city: match[2] || "", salary: oneLine(match[3] || ""), source: "recommend_job_dropdown", raw_text: oneLine(match[0]) };
+    }
+    return { title: "", city: "", salary: "", source: "recommend_job_dropdown", raw_text: "" };
+  }
+
+  function recommendModalLikeCandidates() {
+    const nodes = Array.from(document.querySelectorAll("body *")).slice(0, 3000);
+    const candidates = [];
+    for (const node of nodes) {
+      if (!(node instanceof Element) || isExtensionDom(node)) continue;
+      const raw = cleanText(node.innerText || node.textContent || "");
+      if (raw.length < 120 || raw.length > 16000) continue;
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0) continue;
+      const rect = node.getBoundingClientRect();
+      const zIndex = Number.parseInt(style.zIndex, 10);
+      const positioned = style.position === "fixed" || style.position === "absolute";
+      const highZ = Number.isFinite(zIndex) && zIndex > 10;
+      const largeText = raw.length > 300;
+      const resumeSignals = /\d{2}\s*岁/.test(raw) && /本科|大专|硕士|博士/.test(raw) && /工作经历|期望职位|最近关注|项目经历/.test(raw);
+      if (!(resumeSignals && (positioned || highZ || largeText || rect.width > 500))) continue;
+      let score = 60;
+      const reasons = ["推荐页弹窗候选块"];
+      if (positioned) { score += 15; reasons.push(`position:${style.position}`); }
+      if (highZ) { score += 15; reasons.push(`zIndex:${style.zIndex}`); }
+      if (rect.width > 500) { score += 10; reasons.push("宽度>500"); }
+      if (/工作经历/.test(raw)) { score += 20; reasons.push("工作经历"); }
+      if (/期望职位|最近关注/.test(raw)) { score += 10; reasons.push("期望/最近关注"); }
+      candidates.push({ node, score, reason: reasons.join("；"), raw_text: raw });
+    }
+    return candidates.sort((a, b) => b.score - a.score || b.raw_text.length - a.raw_text.length);
+  }
+
+  function recommendResumeTextFallback() {
+    const body = recommendBodyText();
+    const segments = splitRecommendCandidateSegments(body);
+    const pool = segments.length ? segments.map((item) => item.raw_text) : [body];
+    const scored = pool.map((raw) => {
+      let score = 0;
+      if (/\d{2}\s*岁/.test(raw)) score += 15;
+      if (/本科|大专|硕士|博士/.test(raw)) score += 15;
+      if (/\d+\s*年|10\s*年以上/.test(raw)) score += 10;
+      if (/工作经历/.test(raw)) score += 40;
+      if (/期望职位|最近关注/.test(raw)) score += 20;
+      if (/项目经历|教育经历/.test(raw)) score += 10;
+      return { raw, score };
+    }).filter((item) => item.score >= 70).sort((a, b) => b.score - a.score || b.raw.length - a.raw.length);
+    const best = scored[0];
+    if (!best) return { candidate: null, debug: { strategy: "body_innerText_resume_fallback", segments_found: segments.length, accepted_count: 0 } };
+    const candidate = recommendTextCandidateFromSegment(best.raw, "recommend_resume_text_fallback");
+    candidate.profile_complete = true;
+    return {
+      candidate,
+      debug: {
+        strategy: "body_innerText_resume_fallback",
+        segments_found: segments.length,
+        accepted_count: 1,
+        selected_score: best.score,
+        selected_preview: oneLine(best.raw).slice(0, 500),
+      },
+    };
+  }
+
   function parseRecommendJobDropdownText(text) {
     const raw = oneLine(text).replace(/[_｜|]+/g, " _ ").replace(/\s+/g, " ").trim();
     const salary = (raw.match(SALARY_RE) || [""])[0];
@@ -1766,7 +1996,9 @@
     try {
       if (detectPageType() !== "recommend_page") return { ok: false, job: emptyJob("recommend_job_dropdown"), error: "当前页面不是推荐牛人页" };
       const candidates = recommendJobDropdownCandidates();
-      const parsed = candidates[0]?.parsed || { title: "", city: "", salary: "", source: "recommend_job_dropdown", raw_text: "" };
+      const domParsed = candidates[0]?.parsed || { title: "", city: "", salary: "", source: "recommend_job_dropdown", raw_text: "" };
+      const textParsed = domParsed.title ? domParsed : parseRecommendJobFromText(recommendBodyText());
+      const parsed = domParsed.title ? domParsed : textParsed;
       const job = {
         ...emptyJob("recommend_job_dropdown"),
         title: parsed.title || "",
@@ -1777,14 +2009,18 @@
         warning: parsed.title ? "推荐页仅识别到岗位下拉框信息，未使用缓存岗位JD" : "未识别推荐页顶部岗位下拉框",
       };
       return {
-        ok: Boolean(job.title || job.city || job.salary),
+        ok: Boolean(job.title),
         job,
         title: job.title,
         city: job.city,
         salary: job.salary,
         source: "recommend_job_dropdown",
         error: job.title ? "" : "未识别推荐页顶部岗位下拉框",
-        debug: { candidates: candidates.slice(0, 10).map((item) => ({ ...debugNode(item.node, item.score, "recommend_job_dropdown"), parsed: item.parsed })) },
+        debug: {
+          strategy: domParsed.title ? "dom_dropdown_scan" : "body_innerText_fallback",
+          candidates: candidates.slice(0, 10).map((item) => ({ ...debugNode(item.node, item.score, "recommend_job_dropdown"), parsed: item.parsed })),
+          text_fallback: textParsed,
+        },
       };
     } catch (e) {
       return { ok: false, job: emptyJob("recommend_job_dropdown"), error: `推荐页岗位识别异常：${e.message || e}` };
@@ -1795,7 +2031,7 @@
     try {
       if (detectPageType() !== "recommend_page") return { ok: false, page_type: detectPageType(), candidates: [], error: "当前页面不是推荐牛人页" };
       const scan = scanRecommendCandidateCards();
-      const candidates = (scan.accepted || []).map((item) => {
+      let candidates = (scan.accepted || []).map((item) => {
         const c = cardCandidateFromNode(item, "recommend_page");
         return {
           name: c.name || "",
@@ -1815,7 +2051,12 @@
           profile_complete: false,
         };
       }).filter((candidate) => candidate.name || candidate.raw_text);
-      return { ok: true, page_type: "recommend_page", candidates, count: candidates.length, debug: scan.debug };
+      let fallback = null;
+      if ((scan.debug?.accepted_count || 0) === 0 || candidates.length === 0) {
+        fallback = scanRecommendListTextFallback();
+        candidates = fallback.candidates;
+      }
+      return { ok: true, page_type: "recommend_page", candidates, count: candidates.length, debug: { ...scan.debug, fallback_used: Boolean(fallback), text_fallback: fallback?.debug || null } };
     } catch (e) {
       return { ok: false, page_type: "recommend_page", candidates: [], error: `推荐列表扫描异常：${e.message || e}` };
     }
@@ -1824,9 +2065,13 @@
   function extractRecommendResumeModal() {
     try {
       if (detectPageType() !== "recommend_page") return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "当前页面不是推荐牛人页" };
-      const item = resumeModalCandidates()[0];
-      if (!item) return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "未检测到已打开的推荐页简历弹窗", debug: { resume_modal_candidates: [] } };
-      const raw = cleanText(textOf(item.node));
+      const item = resumeModalCandidates()[0] || recommendModalLikeCandidates()[0];
+      if (!item) {
+        const fallback = recommendResumeTextFallback();
+        if (fallback.candidate) return { ok: true, candidate: fallback.candidate, debug: { modal_strategy: "body_innerText_fallback", fallback: fallback.debug, modal_like_candidates: [] } };
+        return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "未检测到已打开的推荐页简历弹窗", debug: { resume_modal_candidates: [], fallback: fallback.debug } };
+      }
+      const raw = cleanText(item.raw_text || textOf(item.node));
       const parsed = sourceCandidateFromRaw(raw, "recommend_resume_modal", raw);
       const exp = parseExperience(raw);
       const candidate = {
@@ -1851,7 +2096,11 @@
         company_keywords: parsed.company_keywords || [],
         style_keywords: parsed.style_keywords || [],
       };
-      return { ok: Boolean(candidate.name || candidate.raw_text), candidate, debug: { modal: debugNode(item.node, item.score, item.reason) } };
+      if (!candidate.name) {
+        const fallback = recommendResumeTextFallback();
+        if (fallback.candidate?.name) return { ok: true, candidate: fallback.candidate, debug: { modal_strategy: "body_innerText_fallback_after_dom_parse", modal: debugNode(item.node, item.score, item.reason), fallback: fallback.debug } };
+      }
+      return { ok: Boolean(candidate.name || candidate.raw_text), candidate, debug: { modal_strategy: item.raw_text ? "recommend_modal_like_dom" : "resume_modal_candidates", modal: debugNode(item.node, item.score, item.reason) } };
     } catch (e) {
       return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: `推荐页简历弹窗识别异常：${e.message || e}` };
     }
@@ -2020,6 +2269,7 @@
           url: location.href,
           title: document.title,
           page_type: "recommend_page",
+          recommend_dom_recon: recommendDomRecon(),
           recommend_page_debug: {
             parsed_job: extractRecommendJob(),
             list_scan: scanRecommendList(),
