@@ -19,9 +19,17 @@
     <section class="card">
       <h2>2. 候选人信息</h2>
       <button id="extractBtn">抓取当前页面候选人信息</button>
+      <p id="candidateCount">本页尚未识别候选人</p>
+      <div class="pager">
+        <button id="prevCandidateBtn" type="button">上一个</button>
+        <button id="nextCandidateBtn" type="button">下一个候选人</button>
+      </div>
       <p><strong>姓名：</strong><span id="candidateName">-</span></p>
+      <p><strong>年龄：</strong><span id="candidateAge">-</span></p>
+      <p><strong>学历：</strong><span id="candidateEducation">-</span></p>
+      <p><strong>薪资：</strong><span id="candidateSalary">-</span></p>
       <p><strong>职位：</strong><span id="candidateTitle">-</span></p>
-      <textarea id="candidateText" placeholder="抓取到的候选人文本会显示在这里，也可以手动修改。"></textarea>
+      <textarea id="candidateText" placeholder="抓取到的单个候选人卡片文本会显示在这里，也可以手动修改。"></textarea>
     </section>
 
     <section class="card">

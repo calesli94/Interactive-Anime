@@ -2,6 +2,8 @@
 
 const API_BASE = "http://127.0.0.1:8787";
 let currentCandidate = null;
+let currentCandidates = [];
+let currentCandidateIndex = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -31,13 +33,45 @@ async function sendMessageToActiveTab(message) {
   return chrome.tabs.sendMessage(tab.id, message);
 }
 
+function textOrDash(value) {
+  return value ? String(value) : "-";
+}
+
+function renderCandidate(index) {
+  currentCandidateIndex = Math.max(0, Math.min(index, currentCandidates.length - 1));
+  currentCandidate = currentCandidates[currentCandidateIndex] || null;
+
+  if (!currentCandidate) {
+    $("candidateCount").textContent = "本页识别到 0 个候选人，请确认当前页面是 BOSS 推荐牛人列表页。";
+    $("candidateName").textContent = "-";
+    $("candidateAge").textContent = "-";
+    $("candidateEducation").textContent = "-";
+    $("candidateSalary").textContent = "-";
+    $("candidateTitle").textContent = "-";
+    $("candidateText").value = "";
+    return;
+  }
+
+  $("candidateCount").textContent = `本页识别到 ${currentCandidates.length} 个候选人，当前第 ${currentCandidateIndex + 1} 个。`;
+  $("candidateName").textContent = textOrDash(currentCandidate.name);
+  $("candidateAge").textContent = textOrDash(currentCandidate.age);
+  $("candidateEducation").textContent = textOrDash(currentCandidate.education);
+  $("candidateSalary").textContent = textOrDash(currentCandidate.expected_salary);
+  $("candidateTitle").textContent = textOrDash(currentCandidate.expected_position || currentCandidate.title);
+  $("candidateText").value = currentCandidate.raw_text || "";
+}
+
 async function extractCandidate() {
   try {
     const result = await sendMessageToActiveTab({ type: "EXTRACT_CANDIDATE" });
-    currentCandidate = result.candidate;
-    $("candidateName").textContent = currentCandidate.name || "未知候选人";
-    $("candidateTitle").textContent = currentCandidate.title || "-";
-    $("candidateText").value = currentCandidate.raw_text || "";
+    currentCandidates = result.candidates || (result.candidate ? [result.candidate] : []);
+    renderCandidate(0);
+
+    $("resultBox").textContent = JSON.stringify({
+      candidate_count: result.candidate_count || currentCandidates.length,
+      debug_cards: result.debug_cards || [],
+      validation: currentCandidate ? currentCandidate.validation : null,
+    }, null, 2);
   } catch (error) {
     $("resultBox").textContent = `抓取失败：${error.message}\n请刷新页面后重试。`;
   }
@@ -45,7 +79,7 @@ async function extractCandidate() {
 
 function candidateFromForm() {
   return {
-    name: $("candidateName").textContent || "未知候选人",
+    name: $("candidateName").textContent === "-" ? "未知候选人" : $("candidateName").textContent,
     title: $("candidateTitle").textContent === "-" ? "" : $("candidateTitle").textContent,
     raw_text: $("candidateText").value,
     source_url: currentCandidate ? currentCandidate.source_url : "",
@@ -83,8 +117,20 @@ async function analyzeCandidate() {
   }
 }
 
+function showPreviousCandidate() {
+  if (!currentCandidates.length) return;
+  renderCandidate(currentCandidateIndex - 1);
+}
+
+function showNextCandidate() {
+  if (!currentCandidates.length) return;
+  renderCandidate(currentCandidateIndex + 1);
+}
+
 $("checkServiceBtn").addEventListener("click", checkService);
 $("extractBtn").addEventListener("click", extractCandidate);
+$("prevCandidateBtn").addEventListener("click", showPreviousCandidate);
+$("nextCandidateBtn").addEventListener("click", showNextCandidate);
 $("saveBtn").addEventListener("click", saveCandidate);
 $("analyzeBtn").addEventListener("click", analyzeCandidate);
 

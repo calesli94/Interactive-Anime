@@ -58,3 +58,9 @@ pre {
   max-height: 180px;
   overflow: auto;
 }
+
+.pager {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
