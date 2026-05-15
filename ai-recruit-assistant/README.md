@@ -1,69 +1,184 @@
-# AI招聘助手本地安装版
+# ai-recruit-assistant
 
-## 项目目标
-AI招聘助手本地安装版旨在提供一个可离线部署、可本地扩展的招聘辅助工具，帮助招聘人员在浏览器中高效处理候选人信息，并通过本地服务完成数据管理、消息处理与统计分析。
+BOSS 直聘招聘辅助工具 MVP，包含：
 
-## 项目组成
-- **plugin/**：Chrome 插件端，负责页面交互与用户操作入口。
-- **local_server/**：基于 FastAPI 的本地服务，负责业务逻辑与 SQLite 数据存储。
-- **desktop_app/**：桌面启动入口（预留）。
-- **installer/**：本地打包与安装脚本（预留）。
+- **browser_extension/**：Edge/Chrome 浏览器插件，Manifest V3。
+- **local_server/**：本地 FastAPI 服务。
+- **local_server/data/recruit_assistant.db**：运行后自动创建的 SQLite 本地人才库。
 
-## Codex Cloud Environment 安装依赖（必做）
-在 Codex 云端环境中，请先执行以下 setup script，避免出现 `ModuleNotFoundError`（如缺少 pydantic）：
+第一阶段目标是跑通最小链路：在候选人页面抓取文本 → 调用本地服务做 mock AI 分析 → 生成个性化打招呼话术 → 保存到本地人才库。
 
-```bash
-cd ai-recruit-assistant/local_server
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+## 目录结构
+
+```text
+ai-recruit-assistant/
+├─ browser_extension/
+│  ├─ manifest.json      # Manifest V3 插件配置
+│  ├─ content.js         # 注入页面，抓取 document.body.innerText
+│  ├─ popup.html         # 插件弹窗页面
+│  ├─ popup.js           # 弹窗交互逻辑，调用本地 FastAPI
+│  └─ styles.css         # 弹窗基础样式
+├─ local_server/
+│  ├─ main.py            # FastAPI 接口入口
+│  ├─ database.py        # SQLite 初始化和连接工具
+│  ├─ run_server.py      # Windows 友好的启动入口
+│  ├─ requirements.txt   # Python 依赖
+│  └─ data/.gitkeep      # 保留 data 目录，数据库运行后自动生成
+└─ README.md
 ```
 
-> 说明：生产环境仍建议完整安装 `requirements.txt`。`priority_service` 内的 fallback 仅用于受限测试环境（例如无法安装 pydantic 的云端沙箱）。
+## Windows 下启动后端
 
-## 快速启动（本地服务）
-1. 进入服务目录：
-   ```bash
-   cd ai-recruit-assistant/local_server
-   ```
-2. 安装依赖：
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. 启动 FastAPI：
-   ```bash
-   uvicorn main:app --reload --host 127.0.0.1 --port 8787
-   ```
-4. 打开接口文档：
-   - Swagger UI: http://127.0.0.1:8787/docs
+> 以下命令可在 PowerShell 或 CMD 中执行。请先安装 Python 3.10+。
 
-## 加载 Chrome 插件（开发者模式）
-1. 打开 Chrome，访问 `chrome://extensions/`。
+1. 进入后端目录：
+
+```bat
+cd ai-recruit-assistant\local_server
+```
+
+2. 创建虚拟环境：
+
+```bat
+python -m venv .venv
+```
+
+3. 激活虚拟环境：
+
+PowerShell：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+CMD：
+
+```bat
+.venv\Scripts\activate.bat
+```
+
+4. 安装依赖：
+
+```bat
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+5. 启动 FastAPI：
+
+```bat
+uvicorn main:app --reload --host 127.0.0.1 --port 8787
+```
+
+也可以使用项目提供的启动脚本：
+
+```bat
+python run_server.py
+```
+
+6. 浏览器打开接口文档：
+
+```text
+http://127.0.0.1:8787/docs
+```
+
+## 加载 Edge/Chrome 浏览器插件
+
+Chrome：
+
+1. 打开 `chrome://extensions/`。
 2. 打开右上角“开发者模式”。
 3. 点击“加载已解压的扩展程序”。
-4. 选择目录：`ai-recruit-assistant/plugin`。
-5. 加载后即可在浏览器工具栏看到插件入口。
+4. 选择本项目的 `ai-recruit-assistant\browser_extension` 目录。
+5. 打开任意候选人页面，点击浏览器工具栏中的插件图标。
+
+Edge：
+
+1. 打开 `edge://extensions/`。
+2. 打开“开发人员模式”。
+3. 点击“加载解压缩的扩展”。
+4. 选择 `ai-recruit-assistant\browser_extension` 目录。
+
+## 如何测试
+
+### 1. 测试健康检查
+
+后端启动后，打开：
+
+```text
+http://127.0.0.1:8787/health
+```
+
+看到类似结果表示成功：
+
+```json
+{"status":"ok","service":"ai-recruit-assistant"}
+```
+
+### 2. 测试保存候选人
+
+PowerShell 示例：
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/candidates" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"name":"张三","title":"Python 后端","raw_text":"张三 熟悉 Python FastAPI SQLite","source_url":"https://example.com/candidate/1"}'
+```
+
+### 3. 测试 mock AI 分析
+
+PowerShell 示例：
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/analyze" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"candidate":{"name":"张三","title":"Python 后端","raw_text":"张三 熟悉 Python FastAPI SQLite","source_url":"https://example.com/candidate/1"},"job_requirement":"招聘 Python FastAPI 后端，熟悉 SQLite 优先"}'
+```
+
+如果返回 `score`、`summary`、`greeting` 等字段，说明分析接口成功。
+
+### 4. 测试插件端到端流程
+
+1. 确认本地服务正在运行。
+2. 打开一个候选人页面或任意测试网页。
+3. 点击插件图标。
+4. 点击“检查本地服务状态”，应显示服务已连接。
+5. 点击“抓取当前页面候选人信息”，文本框应出现当前页面文本。
+6. 点击“保存到本地人才库”，应返回 `candidate_id`。
+7. 点击“发送到本地服务分析”，应展示 mock 分析结果和打招呼话术。
 
 
-## Windows 打包与安装（无需用户安装 Python）
+### 5. 测试 BOSS 推荐牛人 DOM 调试模式
 
-### 打包（开发者执行）
-1. 在 Windows 上打开 `cmd` 或 PowerShell。
-2. 进入安装脚本目录：
-   ```bat
-   cd ai-recruit-assistant\installer
-   ```
-3. 运行打包脚本：
-   ```bat
-   build.bat
-   ```
-4. 成功后可在 `ai-recruit-assistant\installer\dist\AIRecruitAssistant.exe` 找到可执行文件。
+当前阶段优先确认真实候选人文字到底存在于哪些 DOM 元素里，不继续盲猜 selector，也不依赖字段解析结果。
 
-### 安装与运行（最终用户）
-1. 将 `AIRecruitAssistant.exe` 分发给用户（可放入安装包或压缩包）。
-2. 用户双击 `AIRecruitAssistant.exe` 即可启动本地服务，无需安装 Python。
-3. 程序启动后会自动监听：`http://127.0.0.1:8787`。
-4. 可访问 `http://127.0.0.1:8787/docs` 验证服务已运行。
+1. 打开 BOSS 直聘“推荐牛人”列表页。
+2. 打开浏览器开发者工具 Console。
+3. 点击插件里的“输出候选人 DOM 调试”。
+4. Console 必须看到：
+   - `[AI Recruit] all elements: ...`
+   - `[AI Recruit] matched elements: ...`
+   - `[AI Recruit] body text includes 打招呼: ...`
+   - `[AI Recruit] body text includes Dingyan: ...`
+   - `[AI Recruit] body text preview: ...`
+5. 插件会遍历 `document.querySelectorAll("*")`，只要元素的 `innerText` 或 `textContent` 包含 `打招呼`、`10-11K` 或 `Dingyan Zhong` 就作为强命中输出，弹窗最多展示前 100 个命中元素。
+6. 页面上的命中元素会出现 `3px solid red` 红色描边，用于确认候选人区域是否被定位到。
+7. 插件弹窗的“DOM 调试结果”区域会展示：序号、来源、tagName、className、id、width/height/top/left、是否包含“打招呼”、是否包含 `K`、是否包含“岁”、是否包含“本科/硕士”、XPath、`innerText` 前 500 字和 `textContent` 前 500 字。
+8. 如果 `body text preview` 能看到候选人信息，但 `matched elements` 仍为 0，说明匹配代码有 bug；如果 `body text preview` 看不到候选人信息，请查看 Console 中的 iframe 数量和 shadowRoot 数量，判断页面是否使用 iframe 或 Shadow DOM 渲染。
 
-### 说明
-- 可执行文件入口为 `local_server/run_server.py`，内部会自动启动 FastAPI/Uvicorn。
-- 若要做完整安装向导（桌面快捷方式、卸载器），建议后续结合 Inno Setup 或 NSIS。
+## 已实现接口
+
+- `GET /health`：本地服务健康检查。
+- `POST /api/candidates`：保存候选人到 SQLite。
+- `GET /api/candidates`：查看最近 20 条候选人，方便验证。
+- `POST /api/analyze`：规则和 mock 版本的 AI 匹配分析。
+
+## 下一步建议
+
+1. 为 BOSS 直聘候选人页补充更精细的 DOM selector，提取姓名、年龄、经验、技能、期望薪资等结构化字段。
+2. 增加候选人去重逻辑，避免同一候选人被重复保存。
+3. 接入真实大模型接口，替换 `mock_analyze`。
+4. 增加岗位配置页面，让招聘人员维护岗位 JD 和关键词。
+5. 增加本地人才库搜索、标签、备注和跟进状态。

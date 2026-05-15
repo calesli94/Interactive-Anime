@@ -1,0 +1,83 @@
+/* 简单样式，保证 MVP 易读，不做复杂 UI。 */
+body {
+  margin: 0;
+  font-family: Arial, "Microsoft YaHei", sans-serif;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+
+.popup {
+  width: 360px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.card {
+  margin-bottom: 10px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+  border-radius: 8px;
+}
+
+button {
+  margin: 4px 4px 4px 0;
+  padding: 6px 10px;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+textarea {
+  width: 100%;
+  min-height: 80px;
+  margin-top: 6px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px;
+  background: #111827;
+  color: #e5e7eb;
+  border-radius: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.pager {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.debug-list {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #d8dee9;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.debug-item {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 11px;
+  line-height: 1.4;
+}
