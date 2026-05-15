@@ -1372,8 +1372,73 @@
     };
   }
 
+
+
+  function analyzeCurrentFrame() {
+    const raw = cleanText(document.body?.innerText || document.body?.textContent || "");
+    const one = oneLine(raw);
+    const nodes = Array.from(document.querySelectorAll("body *")).slice(0, 3000).filter((node) => node instanceof Element && !isExtensionDom(node));
+    const textNodes = nodes.map((node) => {
+      const text = oneLine(node.innerText || node.textContent || "");
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return { node, text, rect, style };
+    }).filter((item) => item.text);
+    const navWords = ["推荐牛人", "深度搜索", "搜索", "沟通", "牛人管理"];
+    const salaryRe = /(?:\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/;
+    const cityRe = /重庆|上海|北京|广州|深圳|杭州|成都|武汉|苏州|南京/;
+    const candidatePattern = /[\u4e00-\u9fa5]{2,6}\s+(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)[\s\S]{0,160}?\d{2}\s*岁[\s\S]{0,160}?(?:本科|大专|硕士|博士)/g;
+    const candidateLikeCount = (one.match(candidatePattern) || []).length;
+    const greetingButtonNodes = textNodes.filter((item) => /打招呼|立即沟通/.test(item.text) && /button|a/i.test(item.node.tagName || item.node.getAttribute("role") || ""));
+    const dropdownLikeNodes = textNodes.filter((item) => {
+      const meta = `${item.node.className || ""} ${item.node.id || ""} ${item.node.getAttribute("role") || ""}`.toLowerCase();
+      return /select|dropdown|job|position|职位|岗位/.test(meta + item.text) && salaryRe.test(item.text) && cityRe.test(item.text);
+    });
+    const candidateContainers = textNodes.filter((item) => /\d{2}\s*岁/.test(item.text) && /本科|大专|硕士|博士/.test(item.text) && (salaryRe.test(item.text) || /期望/.test(item.text)) && (/刚刚活跃|今日活跃|本周活跃|3日内活跃/.test(item.text) || /打招呼|立即沟通/.test(item.text)));
+    const modalContainers = textNodes.filter((item) => /工作经历/.test(item.text) && /教育经历|项目经历|期望职位|最近关注/.test(item.text));
+    const chatContainers = textNodes.filter((item) => /输入消息|发送|聊天记录/.test(item.text) || (/(textarea|textbox|editor|message|chat)/i.test(`${item.node.className || ""} ${item.node.id || ""} ${item.node.getAttribute("role") || ""}`) && /发送|沟通/.test(item.text)));
+    const has_left_navigation = navWords.some((word) => one.includes(word));
+    const has_job_selector = dropdownLikeNodes.length > 0 || (salaryRe.test(one) && cityRe.test(one) && /职位|岗位|推荐|搜索/.test(one));
+    const has_candidate_cards = candidateLikeCount >= 1 || candidateContainers.length >= 2 || (candidateContainers.length >= 1 && greetingButtonNodes.length > 0);
+    const has_resume_modal = modalContainers.length > 0 || (/工作经历/.test(one) && /教育经历|项目经历|期望职位|最近关注/.test(one));
+    const has_chat_area = chatContainers.length > 0;
+    const has_greeting_buttons = greetingButtonNodes.length > 0 || /打招呼|立即沟通/.test(one);
+    const frame_roles = [];
+    if (has_left_navigation) frame_roles.push("navigation_frame");
+    if (has_job_selector) frame_roles.push("job_selector_frame");
+    if (has_candidate_cards) frame_roles.push("candidate_list_frame");
+    if (has_resume_modal) frame_roles.push("resume_modal_frame");
+    if (has_chat_area) frame_roles.push("chat_frame");
+    const frame_role = has_resume_modal ? "resume_modal_frame" : (has_candidate_cards ? "candidate_list_frame" : (has_job_selector ? "job_selector_frame" : (has_left_navigation ? "navigation_frame" : (has_chat_area ? "chat_frame" : "unknown_frame"))));
+    const preview = (item) => ({ tag: (item.node.tagName || "").toLowerCase(), className: String(item.node.className || "").slice(0, 120), id: item.node.id || "", rect: rectInfo(item.node), text_preview: item.text.slice(0, 220) });
+    return {
+      frame_url: location.href,
+      is_top: window.top === window,
+      frame_role,
+      frame_roles,
+      body_text_length: raw.length,
+      body_preview: raw.slice(0, 1000),
+      has_left_navigation,
+      has_job_selector,
+      has_candidate_cards,
+      has_resume_modal,
+      has_chat_area,
+      has_greeting_buttons,
+      detected_module_hint: detectBossModule(),
+      container_debug: {
+        candidate_like_count: candidateLikeCount,
+        greeting_button_count: greetingButtonNodes.length,
+        job_selector_candidates: dropdownLikeNodes.slice(0, 8).map(preview),
+        candidate_card_candidates: candidateContainers.slice(0, 8).map(preview),
+        resume_modal_candidates: modalContainers.slice(0, 8).map(preview),
+        chat_area_candidates: chatContainers.slice(0, 8).map(preview),
+        top_text_blocks: textNodes.slice(0, 12).map(preview),
+      },
+    };
+  }
+
   function frameDiagnostics() {
-    return { top_url: window.top === window ? location.href : "", frames: [currentFrameDiagnostics()] };
+    return { top_url: window.top === window ? location.href : "", frames: [currentFrameDiagnostics()], frame_map: [analyzeCurrentFrame()] };
   }
 
   function detectCandidateListPageType() {
@@ -2414,6 +2479,7 @@
           page_type: "recommend_page",
           module_router_debug: { module_type: detectBossModule(), page_type: pageType, url: location.href },
           frame_diagnostics: frameDiagnostics(),
+          frame_mapping_debug: analyzeCurrentFrame(),
           recommend_dom_recon: recommendDomRecon(),
           sourcing_job_debug: extractSourcingJob(),
           sourcing_list_scan_debug: scanSourcingList(),
@@ -2436,6 +2502,7 @@
         page_type: detectPageType(),
         module_router_debug: { module_type: detectBossModule(), page_type: detectPageType(), url: location.href },
         frame_diagnostics: frameDiagnostics(),
+        frame_mapping_debug: analyzeCurrentFrame(),
         sourcing_job_debug: isSourcingFrameContext() ? extractSourcingJob() : null,
         sourcing_list_scan_debug: isSourcingFrameContext() ? scanSourcingList() : null,
         sourcing_resume_modal_debug: isSourcingFrameContext() ? extractSourcingResumeModal() : null,
@@ -2499,6 +2566,7 @@
       else if (message?.type === "EXTRACT_JOB") sendResponse(extractJob());
       else if (message?.type === "DETECT_BOSS_MODULE") sendResponse({ ok: true, module_type: detectBossModule(), frame: currentFrameDiagnostics() });
       else if (message?.type === "DIAGNOSE_BOSS_FRAME") sendResponse({ ok: true, ...currentFrameDiagnostics() });
+      else if (message?.type === "ANALYZE_CURRENT_FRAME") sendResponse({ ok: true, ...analyzeCurrentFrame() });
       else if (message?.type === "EXTRACT_SOURCING_JOB") sendResponse(extractSourcingJob());
       else if (message?.type === "SCAN_SOURCING_LIST") sendResponse(scanSourcingList());
       else if (message?.type === "EXTRACT_SOURCING_RESUME_MODAL") sendResponse(extractSourcingResumeModal());

@@ -20,6 +20,7 @@ const state = {
   sourcingModule:"",
   sourcingDiagnostics:null,
   sourcingFrameId:null,
+  bossFrameMap:null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -203,6 +204,94 @@ async function sendToContent(message){
   return {ok:false,error:`content.js 已注入但当前页面仍无法建立连接，请刷新 BOSS 页面后重试：${secondError||firstError||'未知原因'}`};
 }
 
+
+
+function analyzeBossFrameMapStandalone(){
+  const clean=(v)=>String(v||'').replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
+  const one=(v)=>clean(v).replace(/\s+/g,' ').trim();
+  const rectInfo=(node)=>{ const r=node.getBoundingClientRect(); return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}; };
+  const raw=clean(document.body?.innerText || document.body?.textContent || '');
+  const flat=one(raw);
+  const href=location.href.toLowerCase();
+  let detected_module_hint='unknown_module';
+  if(/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(flat)) detected_module_hint='recommend_module';
+  else if(/深度搜索/.test(flat)) detected_module_hint='deep_search_module';
+  else if(/\/web\/chat\/index(?:[/?#]|$)/.test(href)) detected_module_hint='chat_module';
+  else if(/牛人管理/.test(flat)) detected_module_hint='talent_manage_module';
+  else if(/意向沟通/.test(flat)) detected_module_hint='intention_module';
+  else if(/面试/.test(flat)) detected_module_hint='interview_module';
+  else if(/职位管理/.test(flat)) detected_module_hint='job_manage_module';
+  else if(/\/web\/(chat|geek|boss)\/search(?:[/?#]|$)/.test(href) || /搜索/.test(flat)) detected_module_hint='search_module';
+  const nodes=Array.from(document.querySelectorAll('body *')).slice(0,3000).filter((node)=>node instanceof Element);
+  const textNodes=nodes.map((node)=>({node,text:one(node.innerText||node.textContent||'')})).filter((item)=>item.text);
+  const salaryRe=/(?:\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/;
+  const cityRe=/重庆|上海|北京|广州|深圳|杭州|成都|武汉|苏州|南京/;
+  const navWords=['推荐牛人','深度搜索','搜索','沟通','牛人管理'];
+  const candidatePattern=/[\u4e00-\u9fa5]{2,6}\s+(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)[\s\S]{0,160}?\d{2}\s*岁[\s\S]{0,160}?(?:本科|大专|硕士|博士)/g;
+  const candidateLikeCount=(flat.match(candidatePattern)||[]).length;
+  const greetingButtonNodes=textNodes.filter((item)=>/打招呼|立即沟通/.test(item.text) && /button|a/i.test(item.node.tagName||item.node.getAttribute('role')||''));
+  const dropdownLikeNodes=textNodes.filter((item)=>/select|dropdown|job|position|职位|岗位/i.test(`${item.node.className||''} ${item.node.id||''} ${item.node.getAttribute('role')||''} ${item.text}`) && salaryRe.test(item.text) && cityRe.test(item.text));
+  const candidateContainers=textNodes.filter((item)=>/\d{2}\s*岁/.test(item.text) && /本科|大专|硕士|博士/.test(item.text) && (salaryRe.test(item.text)||/期望/.test(item.text)) && (/刚刚活跃|今日活跃|本周活跃|3日内活跃/.test(item.text)||/打招呼|立即沟通/.test(item.text)));
+  const modalContainers=textNodes.filter((item)=>/工作经历/.test(item.text) && /教育经历|项目经历|期望职位|最近关注/.test(item.text));
+  const chatContainers=textNodes.filter((item)=>/输入消息|发送|聊天记录/.test(item.text));
+  const has_left_navigation=navWords.some((word)=>flat.includes(word));
+  const has_job_selector=dropdownLikeNodes.length>0 || (salaryRe.test(flat) && cityRe.test(flat) && /职位|岗位|推荐|搜索/.test(flat));
+  const has_candidate_cards=candidateLikeCount>=1 || candidateContainers.length>=2 || (candidateContainers.length>=1 && greetingButtonNodes.length>0);
+  const has_resume_modal=modalContainers.length>0 || (/工作经历/.test(flat) && /教育经历|项目经历|期望职位|最近关注/.test(flat));
+  const has_chat_area=chatContainers.length>0;
+  const has_greeting_buttons=greetingButtonNodes.length>0 || /打招呼|立即沟通/.test(flat);
+  const frame_roles=[];
+  if(has_left_navigation) frame_roles.push('navigation_frame');
+  if(has_job_selector) frame_roles.push('job_selector_frame');
+  if(has_candidate_cards) frame_roles.push('candidate_list_frame');
+  if(has_resume_modal) frame_roles.push('resume_modal_frame');
+  if(has_chat_area) frame_roles.push('chat_frame');
+  const frame_role=has_resume_modal?'resume_modal_frame':(has_candidate_cards?'candidate_list_frame':(has_job_selector?'job_selector_frame':(has_left_navigation?'navigation_frame':(has_chat_area?'chat_frame':'unknown_frame'))));
+  const preview=(item)=>({tag:(item.node.tagName||'').toLowerCase(),className:String(item.node.className||'').slice(0,100),id:item.node.id||'',rect:rectInfo(item.node),text_preview:item.text.slice(0,180)});
+  return {frame_url:location.href,is_top:window.top===window,frame_role,frame_roles,body_text_length:raw.length,body_preview:raw.slice(0,1000),has_left_navigation,has_job_selector,has_candidate_cards,has_resume_modal,has_chat_area,has_greeting_buttons,detected_module_hint,container_debug:{candidate_like_count:candidateLikeCount,greeting_button_count:greetingButtonNodes.length,job_selector_candidates:dropdownLikeNodes.slice(0,6).map(preview),candidate_card_candidates:candidateContainers.slice(0,6).map(preview),resume_modal_candidates:modalContainers.slice(0,6).map(preview),chat_area_candidates:chatContainers.slice(0,6).map(preview)}};
+}
+
+function scoreFrameRole(frame,role){
+  if(!frame) return -1;
+  if((frame.frame_roles||[]).includes(role)) return 1000 + (frame.body_text_length||0)/100;
+  return frame.frame_role===role ? 900 : -1;
+}
+
+function renderBossFrameMap(){
+  const map=state.bossFrameMap||{frames:[]};
+  const frames=map.frames||[];
+  const bestCandidate=[...frames].sort((a,b)=>scoreFrameRole(b,'candidate_list_frame')-scoreFrameRole(a,'candidate_list_frame'))[0];
+  const bestResume=[...frames].sort((a,b)=>scoreFrameRole(b,'resume_modal_frame')-scoreFrameRole(a,'resume_modal_frame'))[0];
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('best-candidate-frame', scoreFrameRole(bestCandidate,'candidate_list_frame')>=0 ? `Frame ${bestCandidate.frame_id}` : '-');
+  set('best-resume-frame', scoreFrameRole(bestResume,'resume_modal_frame')>=0 ? `Frame ${bestResume.frame_id}` : '-');
+  const box=$('boss-frame-map-list');
+  if(!box) return;
+  if(!frames.length){ box.textContent='暂无 Frame Map'; return; }
+  box.innerHTML=frames.map((frame,i)=>{
+    const roles=(frame.frame_roles&&frame.frame_roles.length?frame.frame_roles:[frame.frame_role||'unknown_frame']).join(' / ');
+    const cls=/candidate_list_frame|resume_modal_frame|navigation_frame/.test(roles)?'reply-box frame-map-highlight':'reply-box';
+    return `<div class="${cls}"><p><b>Frame ${i+1}</b> (id=${htmlEscape(frame.frame_id??'-')}) / <b>${htmlEscape(roles)}</b> / ${htmlEscape(frame.detected_module_hint||'-')}</p><p>URL：${htmlEscape(frame.frame_url||'-')}</p><p>body_text_length：${htmlEscape(frame.body_text_length||0)}</p><p>${htmlEscape((frame.body_preview||'').slice(0,240))}</p></div>`;
+  }).join('');
+}
+
+async function analyzeBossFrameMap(){
+  feedback('正在分析 BOSS 页面 Frame 结构...');
+  const active=await queryActiveTab();
+  if(!active.ok){ feedback(`无法获取当前标签页：${active.error}`,'warn'); return; }
+  const tab=active.tab;
+  if(!tab?.id){ feedback('未找到当前活动标签页','warn'); return; }
+  await injectContentScript(tab.id,{allFrames:true});
+  const exec=await executeAllFrames(tab.id, analyzeBossFrameMapStandalone);
+  if(!exec.ok){ feedback(exec.error||'Frame Map 分析失败','warn'); return; }
+  const frames=(exec.results||[]).map((item)=>({...(item.result||{}),frame_id:item.frameId})).filter((frame)=>frame.frame_url);
+  state.bossFrameMap={top_url:tab.url||'',frames};
+  renderBossFrameMap();
+  const nav=frames.some((f)=>(f.frame_roles||[]).includes('navigation_frame'));
+  const list=frames.some((f)=>(f.frame_roles||[]).includes('candidate_list_frame'));
+  const resume=frames.some((f)=>(f.frame_roles||[]).includes('resume_modal_frame'));
+  feedback(`Frame Map 完成：${frames.length} 个 frame；导航=${nav?'有':'无'}，候选列表=${list?'有':'无'}，简历弹窗=${resume?'有':'无'}`, list?'info':'warn');
+}
 
 function diagnoseBossFrameStandalone(){
   const clean=(v)=>String(v||'').replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
@@ -1109,6 +1198,7 @@ function bind(){
   const saveJobAssetBtn=$('save-job-asset-btn'); if(saveJobAssetBtn) saveJobAssetBtn.onclick=()=>saveJobAsset();
   const viewMatchHistoryBtn=$('view-match-history-btn'); if(viewMatchHistoryBtn) viewMatchHistoryBtn.onclick=viewMatchHistory;
   const scanCandidatesBtn=$('scan-candidates-btn'); if(scanCandidatesBtn) scanCandidatesBtn.onclick=scanCandidateList;
+  const analyzeFrameMapBtn=$('analyze-frame-map-btn'); if(analyzeFrameMapBtn) analyzeFrameMapBtn.onclick=analyzeBossFrameMap;
   const sourcingDiagnoseBtn=$('sourcing-diagnose-btn'); if(sourcingDiagnoseBtn) sourcingDiagnoseBtn.onclick=diagnoseBossWorkflow;
   const sourcingExtractJobBtn=$('sourcing-extract-job-btn'); if(sourcingExtractJobBtn) sourcingExtractJobBtn.onclick=extractRecommendJobWorkflow;
   const sourcingScanListBtn=$('sourcing-scan-list-btn'); if(sourcingScanListBtn) sourcingScanListBtn.onclick=scanRecommendListWorkflow;
