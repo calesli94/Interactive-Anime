@@ -70,13 +70,15 @@ function renderDebugNodes(debugNodes) {
     const item = document.createElement("div");
     item.className = "debug-item";
     item.textContent = [
-      `#${node.index} ${node.tag}`,
+      `#${node.index} ${node.tagName || node.tag}`,
+      `source: ${node.source || "document"}`,
       `className: ${node.className || "-"}`,
       `id: ${node.id || "-"}`,
-      `size: ${node.width} x ${node.height}`,
-      `salary=${node.hasSalary} age=${node.hasAge} education=${node.hasEducation} greeting=${node.hasGreetingButton}`,
+      `rect: ${node.width} x ${node.height} @ left=${node.left}, top=${node.top}`,
+      `greeting=${node.hasGreetingButton} K=${node.hasK} age=${node.hasAge} education=${node.hasEducation}`,
       `xpath: ${node.xpath}`,
-      `textPreview: ${node.textPreview}`,
+      `innerText: ${node.innerTextPreview || node.textPreview || ""}`,
+      `textContent: ${node.textContentPreview || ""}`,
     ].join("\n");
     $("debugNodes").appendChild(item);
   });
@@ -89,6 +91,14 @@ async function outputDOMDebug() {
     renderDebugNodes(debugNodes);
     $("resultBox").textContent = JSON.stringify({
       debug_nodes_count: result.debug_nodes_count,
+      total_matched_elements: result.total_matched_elements,
+      weak_matched_elements: result.weak_matched_elements,
+      all_elements_count: result.all_elements_count,
+      iframe_count: result.iframe_count,
+      shadow_root_count: result.shadow_root_count,
+      body_text_includes_greeting: result.body_text_includes_greeting,
+      body_text_includes_dingyan: result.body_text_includes_dingyan,
+      body_text_preview: result.body_text_preview,
       page_title: result.page_title,
       source_url: result.source_url,
     }, null, 2);

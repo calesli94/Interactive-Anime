@@ -152,18 +152,21 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8787/api/analyze" `
 
 ### 5. 测试 BOSS 推荐牛人 DOM 调试模式
 
-当前阶段优先确认真实候选人卡片 DOM，不继续盲猜 selector，也不依赖字段解析结果。
+当前阶段优先确认真实候选人文字到底存在于哪些 DOM 元素里，不继续盲猜 selector，也不依赖字段解析结果。
 
 1. 打开 BOSS 直聘“推荐牛人”列表页。
 2. 打开浏览器开发者工具 Console。
 3. 点击插件里的“输出候选人 DOM 调试”。
-4. Console 应看到类似日志：`[AI Recruit] debug nodes found: N`，其中 `N` 应大于 0。
-5. 页面中间的候选人疑似节点会出现红色描边，用于确认插件当前识别到的区域。
-6. 插件弹窗的“DOM 调试结果”区域会展示前 50 个疑似节点，包括：序号、tag、className、宽高、salary/age/education/greeting 命中情况、xpath 和 `textPreview`。
-7. `textPreview` 应能看到真实候选人卡片内容，例如候选人姓名、`10-15K`、`本科/硕士`、`打招呼`。
-8. 左侧导航不应出现红色描边；如果出现，请记录对应 `className`、`xpath`、宽高和 `textPreview`，用于下一轮精确排除。
-
-DOM 调试规则在 `browser_extension/content.js` 中实现：遍历 `div/li/section/article`，收集节点尺寸、文本长度、薪资/年龄/学历/打招呼命中情况和 XPath；只输出命中薪资、年龄或“打招呼”的前 50 个节点，并在页面上用红框高亮这些节点。
+4. Console 必须看到：
+   - `[AI Recruit] all elements: ...`
+   - `[AI Recruit] matched elements: ...`
+   - `[AI Recruit] body text includes 打招呼: ...`
+   - `[AI Recruit] body text includes Dingyan: ...`
+   - `[AI Recruit] body text preview: ...`
+5. 插件会遍历 `document.querySelectorAll("*")`，只要元素的 `innerText` 或 `textContent` 包含 `打招呼`、`10-11K` 或 `Dingyan Zhong` 就作为强命中输出，弹窗最多展示前 100 个命中元素。
+6. 页面上的命中元素会出现 `3px solid red` 红色描边，用于确认候选人区域是否被定位到。
+7. 插件弹窗的“DOM 调试结果”区域会展示：序号、来源、tagName、className、id、width/height/top/left、是否包含“打招呼”、是否包含 `K`、是否包含“岁”、是否包含“本科/硕士”、XPath、`innerText` 前 500 字和 `textContent` 前 500 字。
+8. 如果 `body text preview` 能看到候选人信息，但 `matched elements` 仍为 0，说明匹配代码有 bug；如果 `body text preview` 看不到候选人信息，请查看 Console 中的 iframe 数量和 shadowRoot 数量，判断页面是否使用 iframe 或 Shadow DOM 渲染。
 
 ## 已实现接口
 

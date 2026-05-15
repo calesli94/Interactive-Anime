@@ -257,29 +257,95 @@ function xpathForElement(element) {
   return `/${parts.join("/")}`;
 }
 
-function debugInfoForNode(node, index) {
-  const rect = node.getBoundingClientRect();
-  const text = cleanText(node.innerText);
-  const hasSalary = SALARY_RE.test(text);
-  const hasAge = AGE_RE.test(text);
-  const hasEducation = EDUCATION_KEYWORDS.some((word) => text.includes(word));
-  const hasGreetingButton = text.includes("打招呼");
+function textForElement(element) {
+  return {
+    innerText: cleanText(element.innerText || ""),
+    textContent: cleanText(element.textContent || ""),
+  };
+}
+
+function hasAnyTextMatch(innerText, textContent) {
+  const text = `${innerText}\n${textContent}`;
+  return ["打招呼", "10-11K", "12-18K", "硕士", "本科", "Dingyan Zhong", "岁"]
+    .some((keyword) => text.includes(keyword));
+}
+
+function hasStrongDebugMatch(innerText, textContent) {
+  const text = `${innerText}\n${textContent}`;
+  return text.includes("打招呼") || text.includes("10-11K") || text.includes("Dingyan Zhong");
+}
+
+function debugInfoForElement(element, index, source = "document") {
+  const rect = element.getBoundingClientRect();
+  const { innerText, textContent } = textForElement(element);
+  const combinedText = `${innerText}\n${textContent}`;
 
   return {
     index,
-    tag: node.tagName.toLowerCase(),
-    className: node.className || "",
-    id: node.id || "",
+    source,
+    tagName: element.tagName.toLowerCase(),
+    className: typeof element.className === "string" ? element.className : "",
+    id: element.id || "",
     width: Math.round(rect.width),
     height: Math.round(rect.height),
-    textLength: text.length,
-    hasSalary,
-    hasAge,
-    hasEducation,
-    hasGreetingButton,
-    textPreview: text.slice(0, 300),
-    xpath: xpathForElement(node),
+    top: Math.round(rect.top),
+    left: Math.round(rect.left),
+    hasGreetingButton: combinedText.includes("打招呼"),
+    hasK: /K/i.test(combinedText),
+    hasAge: combinedText.includes("岁"),
+    hasEducation: /本科|硕士/.test(combinedText),
+    innerTextPreview: innerText.slice(0, 500),
+    textContentPreview: textContent.slice(0, 500),
+    textPreview: (innerText || textContent).slice(0, 500),
+    xpath: xpathForElement(element),
   };
+}
+
+function collectShadowRoots(root = document) {
+  const shadowRoots = [];
+  const elements = Array.from(root.querySelectorAll("*"));
+  for (const element of elements) {
+    if (!element.shadowRoot) continue;
+    shadowRoots.push(element.shadowRoot);
+    shadowRoots.push(...collectShadowRoots(element.shadowRoot));
+  }
+  return shadowRoots;
+}
+
+function collectIframeDocuments() {
+  const iframeDocuments = [];
+  const iframes = Array.from(document.querySelectorAll("iframe"));
+  for (const iframe of iframes) {
+    try {
+      if (iframe.contentDocument) iframeDocuments.push(iframe.contentDocument);
+    } catch (error) {
+      // 跨域 iframe 无法读取 DOM，记录数量即可，避免调试流程中断。
+    }
+  }
+  return iframeDocuments;
+}
+
+function findTextMatchedElements() {
+  const roots = [{ root: document, source: "document" }];
+  collectShadowRoots(document).forEach((root, index) => roots.push({ root, source: `shadowRoot:${index + 1}` }));
+  collectIframeDocuments().forEach((root, index) => roots.push({ root, source: `iframe:${index + 1}` }));
+
+  const weakMatches = [];
+  const strongMatches = [];
+
+  for (const { root, source } of roots) {
+    const elements = Array.from(root.querySelectorAll("*"));
+    for (const element of elements) {
+      const { innerText, textContent } = textForElement(element);
+      if (!hasAnyTextMatch(innerText, textContent)) continue;
+
+      const record = { element, source };
+      weakMatches.push(record);
+      if (hasStrongDebugMatch(innerText, textContent)) strongMatches.push(record);
+    }
+  }
+
+  return { weakMatches, strongMatches };
 }
 
 function clearDebugHighlights() {
@@ -300,32 +366,36 @@ function highlightDebugNodes(nodes) {
 }
 
 function collectDOMDebug() {
-  const allNodes = Array.from(document.querySelectorAll(CANDIDATE_NODE_SELECTOR));
-  const suspiciousNodes = [];
-  const debugNodes = [];
+  const allElements = document.querySelectorAll("*");
+  const bodyText = document.body ? (document.body.innerText || "") : "";
+  const iframeCount = document.querySelectorAll("iframe").length;
+  const shadowRootCount = collectShadowRoots(document).length;
 
-  for (const node of allNodes) {
-    if (isPluginArea(node)) continue;
-    const rawText = cleanText(node.innerText);
-    if (DEBUG_EXCLUDED_NAV_WORDS.some((word) => rawText.includes(word))) continue;
-    const info = debugInfoForNode(node, debugNodes.length + 1);
-    if (!info.hasSalary && !info.hasAge && !info.hasGreetingButton) continue;
-    suspiciousNodes.push(node);
-    debugNodes.push(info);
-    if (debugNodes.length >= 50) break;
-  }
+  console.log("[AI Recruit] all elements:", allElements.length);
+  console.log("[AI Recruit] body text includes 打招呼:", bodyText.includes("打招呼"));
+  console.log("[AI Recruit] body text includes Dingyan:", bodyText.includes("Dingyan"));
+  console.log("[AI Recruit] body text preview:", bodyText.slice(0, 2000));
+  console.log("[AI Recruit] iframe count:", iframeCount);
+  console.log("[AI Recruit] shadowRoot count:", shadowRootCount);
 
-  highlightDebugNodes(suspiciousNodes);
-  console.log(`[AI Recruit] debug nodes found: ${debugNodes.length}`);
+  const { weakMatches, strongMatches } = findTextMatchedElements();
+  const matched = strongMatches.slice(0, 100);
+  const debugNodes = matched.map((item, index) => debugInfoForElement(item.element, index + 1, item.source));
+
+  highlightDebugNodes(matched.map((item) => item.element));
+  console.log("[AI Recruit] matched elements:", strongMatches.length);
   console.table(debugNodes.map((node) => ({
     index: node.index,
-    tag: node.tag,
+    source: node.source,
+    tagName: node.tagName,
     className: node.className,
+    id: node.id,
     size: `${node.width}x${node.height}`,
-    salary: node.hasSalary,
+    position: `${node.left},${node.top}`,
+    greeting: node.hasGreetingButton,
+    hasK: node.hasK,
     age: node.hasAge,
     education: node.hasEducation,
-    greeting: node.hasGreetingButton,
     textPreview: node.textPreview,
     xpath: node.xpath,
   })));
@@ -333,6 +403,14 @@ function collectDOMDebug() {
   return {
     ok: true,
     debug_nodes_count: debugNodes.length,
+    total_matched_elements: strongMatches.length,
+    weak_matched_elements: weakMatches.length,
+    all_elements_count: allElements.length,
+    iframe_count: iframeCount,
+    shadow_root_count: shadowRootCount,
+    body_text_includes_greeting: bodyText.includes("打招呼"),
+    body_text_includes_dingyan: bodyText.includes("Dingyan"),
+    body_text_preview: bodyText.slice(0, 2000),
     debug_nodes: debugNodes,
     page_title: document.title,
     source_url: window.location.href,
