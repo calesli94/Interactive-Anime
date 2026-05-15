@@ -1329,6 +1329,53 @@
   }
 
 
+
+  function detectBossModule() {
+    const href = location.href.toLowerCase();
+    const body = textOf(document.body).slice(0, 12000);
+    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body)) return "recommend_module";
+    if (/深度搜索/.test(body)) return "deep_search_module";
+    if (/\/web\/chat\/index(?:[/?#]|$)/.test(href)) return "chat_module";
+    if (/牛人管理/.test(body)) return "talent_manage_module";
+    if (/意向沟通/.test(body)) return "intention_module";
+    if (/面试/.test(body)) return "interview_module";
+    if (/职位管理/.test(body)) return "job_manage_module";
+    if (/\/web\/(chat|geek|boss)\/search(?:[/?#]|$)/.test(href) || /搜索/.test(body)) return "search_module";
+    return "unknown_module";
+  }
+
+  function isSourcingModule(moduleType = detectBossModule()) {
+    return ["recommend_module", "search_module", "deep_search_module"].includes(moduleType);
+  }
+
+  function isSourcingFrameContext(moduleType = detectBossModule()) {
+    if (isSourcingModule(moduleType)) return true;
+    const raw = cleanText(document.body?.innerText || document.body?.textContent || "");
+    return /[\u4e00-\u9fa5]{2,6}\s+(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)/.test(raw) || /工作经历|期望职位|最近关注/.test(raw) || parseRecommendJobFromText(raw).title;
+  }
+
+  function currentFrameDiagnostics() {
+    const raw = cleanText(document.body?.innerText || document.body?.textContent || "");
+    const one = oneLine(raw);
+    const candidateMatches = one.match(/[\u4e00-\u9fa5]{2,6}\s+(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)[\s\S]{0,120}?\d{2}\s*岁[\s\S]{0,120}?(?:本科|大专|硕士|博士)/g) || [];
+    const jobLike = /[^\n\r_｜|]{2,30}\s*[_｜|\s]+(?:北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京)\s*[_｜|\s]+(?:\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/.test(raw);
+    return {
+      frame_url: location.href,
+      is_top: window.top === window,
+      module_type: detectBossModule(),
+      body_text_length: raw.length,
+      body_text_preview: raw.slice(0, 1000),
+      has_candidate_like_text: candidateMatches.length > 0,
+      has_job_like_text: jobLike,
+      candidate_like_count: candidateMatches.length,
+      greeting_button_count: Array.from(document.querySelectorAll("button, [role='button'], a")).filter((node) => /打招呼|立即沟通|沟通/.test(oneLine(node.innerText || node.textContent || ""))).length,
+    };
+  }
+
+  function frameDiagnostics() {
+    return { top_url: window.top === window ? location.href : "", frames: [currentFrameDiagnostics()] };
+  }
+
   function detectCandidateListPageType() {
     const href = location.href.toLowerCase();
     const body = textOf(document.body).slice(0, 12000);
@@ -2064,7 +2111,7 @@
 
   function extractRecommendResumeModal() {
     try {
-      if (detectPageType() !== "recommend_page") return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "当前页面不是推荐牛人页" };
+      if (detectPageType() !== "recommend_page" && !isSourcingFrameContext()) return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "当前页面不是推荐牛人页或搜索页" };
       const item = resumeModalCandidates()[0] || recommendModalLikeCandidates()[0];
       if (!item) {
         const fallback = recommendResumeTextFallback();
@@ -2107,6 +2154,100 @@
   }
 
 
+  function extractSourcingJob() {
+    try {
+      const moduleType = detectBossModule();
+      if (!isSourcingFrameContext(moduleType)) return { ok: false, job: emptyJob("sourcing_job_selector"), error: "当前模块不是推荐/搜索/深度搜索" };
+      const candidates = recommendJobDropdownCandidates();
+      const domParsed = candidates[0]?.parsed || { title: "", city: "", salary: "", source: "sourcing_job_selector", raw_text: "" };
+      const textParsed = domParsed.title ? domParsed : parseRecommendJobFromText(recommendBodyText());
+      const parsed = domParsed.title ? domParsed : textParsed;
+      const job = {
+        ...emptyJob("sourcing_job_selector"),
+        title: parsed.title || "",
+        city: parsed.city || "",
+        salary: parsed.salary || "",
+        raw_text: parsed.raw_text || "",
+        source: "sourcing_job_selector",
+        jd_complete: false,
+        warning: parsed.title ? "已识别当前推荐/搜索页岗位选择器，未使用缓存岗位" : "当前岗位缺少完整JD，请先保存岗位要求或从岗位库选择。",
+      };
+      return {
+        ok: Boolean(job.title),
+        module_type: moduleType,
+        job,
+        title: job.title,
+        city: job.city,
+        salary: job.salary,
+        source: "sourcing_job_selector",
+        error: job.title ? "" : "未识别当前岗位选择器",
+        debug: {
+          strategy: domParsed.title ? "dom_job_selector_scan" : "body_innerText_fallback",
+          candidates: candidates.slice(0, 10).map((item) => ({ ...debugNode(item.node, item.score, "sourcing_job_selector"), parsed: item.parsed })),
+          text_fallback: textParsed,
+        },
+      };
+    } catch (e) {
+      return { ok: false, job: emptyJob("sourcing_job_selector"), error: `推荐/搜索岗位识别异常：${e.message || e}` };
+    }
+  }
+
+  function scanSourcingList() {
+    try {
+      const moduleType = detectBossModule();
+      if (!isSourcingFrameContext(moduleType)) return { ok: false, module_type: moduleType, candidates: [], error: "当前模块不是推荐/搜索/深度搜索" };
+      const scan = scanRecommendCandidateCards();
+      let candidates = (scan.accepted || []).map((item) => {
+        const c = cardCandidateFromNode(item, moduleType === "recommend_module" ? "recommend_page" : "search_page");
+        return {
+          name: c.name || "",
+          age: c.age || null,
+          experience_years_text: c.experience_years_text || "",
+          education: c.education || "",
+          city: c.city || "",
+          expected_position: c.expected_position || c.current_title || "",
+          salary_expectation: c.salary_expectation || "",
+          skills: c.skills || [],
+          companies: c.companies || [],
+          schools: c.schools || [],
+          highlights: c.highlights || [],
+          raw_text: c.raw_text || "",
+          source: "sourcing_card",
+          source_url: location.href,
+          profile_complete: false,
+        };
+      }).filter((candidate) => candidate.name || candidate.raw_text);
+      let fallback = null;
+      if ((scan.debug?.accepted_count || 0) === 0 || candidates.length === 0) {
+        fallback = scanRecommendListTextFallback();
+        candidates = (fallback.candidates || []).map((candidate) => ({ ...candidate, source: "sourcing_card", profile_complete: false }));
+      }
+      return { ok: true, module_type: moduleType, page_type: moduleType.replace("_module", "_page"), candidates, count: candidates.length, debug: { ...scan.debug, fallback_used: Boolean(fallback), text_fallback: fallback?.debug || null } };
+    } catch (e) {
+      return { ok: false, module_type: detectBossModule(), candidates: [], error: `推荐/搜索列表扫描异常：${e.message || e}` };
+    }
+  }
+
+  function extractSourcingResumeModal() {
+    try {
+      const moduleType = detectBossModule();
+      if (!isSourcingFrameContext(moduleType)) return { ok: false, candidate: emptyCandidate("sourcing_resume_modal"), error: "当前模块不是推荐/搜索/深度搜索" };
+      const result = extractRecommendResumeModal();
+      if (!result.ok) return { ...result, module_type: moduleType };
+      const candidate = {
+        ...(result.candidate || {}),
+        source: "sourcing_resume_modal",
+        profile_complete: true,
+        source_url: location.href,
+      };
+      return { ...result, ok: true, module_type: moduleType, candidate };
+    } catch (e) {
+      return { ok: false, candidate: emptyCandidate("sourcing_resume_modal"), error: `推荐/搜索简历识别异常：${e.message || e}` };
+    }
+  }
+
+
+
   function detectPageType() {
     const body = textOf(document.body).slice(0, 8000);
     const href = location.href.toLowerCase();
@@ -2143,6 +2284,7 @@
         return {
           ok: true,
           page_type: pageType,
+          module_type: detectBossModule(),
           url: location.href,
           title: document.title,
           job,
@@ -2167,6 +2309,7 @@
       return {
         ok: true,
         page_type: pageType,
+        module_type: detectBossModule(),
         url: location.href,
         title: document.title,
         job,
@@ -2269,7 +2412,12 @@
           url: location.href,
           title: document.title,
           page_type: "recommend_page",
+          module_router_debug: { module_type: detectBossModule(), page_type: pageType, url: location.href },
+          frame_diagnostics: frameDiagnostics(),
           recommend_dom_recon: recommendDomRecon(),
+          sourcing_job_debug: extractSourcingJob(),
+          sourcing_list_scan_debug: scanSourcingList(),
+          sourcing_resume_modal_debug: extractSourcingResumeModal(),
           recommend_page_debug: {
             parsed_job: extractRecommendJob(),
             list_scan: scanRecommendList(),
@@ -2286,6 +2434,11 @@
         url: location.href,
         title: document.title,
         page_type: detectPageType(),
+        module_router_debug: { module_type: detectBossModule(), page_type: detectPageType(), url: location.href },
+        frame_diagnostics: frameDiagnostics(),
+        sourcing_job_debug: isSourcingFrameContext() ? extractSourcingJob() : null,
+        sourcing_list_scan_debug: isSourcingFrameContext() ? scanSourcingList() : null,
+        sourcing_resume_modal_debug: isSourcingFrameContext() ? extractSourcingResumeModal() : null,
         visible_blocks: visibleBlocks(),
         rejected_chat_list_blocks: rejectedChatListBlocks().slice(0, 20).map((node) => debugNode(node, 0, "rejected_chat_list")),
         active_chat_panel_candidates: activeChatPanelCandidates().slice(0, 20).map((item) => debugNode(item.node, item.score, item.reason)),
@@ -2344,6 +2497,11 @@
       else if (message?.type === "DEBUG_DOM") sendResponse(debugDom());
       else if (message?.type === "EXTRACT_PAGE_CONTEXT") sendResponse(extractPageContext());
       else if (message?.type === "EXTRACT_JOB") sendResponse(extractJob());
+      else if (message?.type === "DETECT_BOSS_MODULE") sendResponse({ ok: true, module_type: detectBossModule(), frame: currentFrameDiagnostics() });
+      else if (message?.type === "DIAGNOSE_BOSS_FRAME") sendResponse({ ok: true, ...currentFrameDiagnostics() });
+      else if (message?.type === "EXTRACT_SOURCING_JOB") sendResponse(extractSourcingJob());
+      else if (message?.type === "SCAN_SOURCING_LIST") sendResponse(scanSourcingList());
+      else if (message?.type === "EXTRACT_SOURCING_RESUME_MODAL") sendResponse(extractSourcingResumeModal());
       else if (message?.type === "EXTRACT_RECOMMEND_JOB") sendResponse(extractRecommendJob());
       else if (message?.type === "EXTRACT_CANDIDATE") sendResponse(extractCandidate());
       else if (message?.type === "EXTRACT_CANDIDATE_LIST") sendResponse(extractCandidateList());

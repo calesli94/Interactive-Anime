@@ -78,14 +78,22 @@
 
 
     <section class="card">
-      <h2>推荐牛人工作流</h2>
-      <p>用于 BOSS 推荐牛人页：先识别顶部岗位，再扫描列表或打开简历后识别完整简历，全程不会自动点击打招呼或自动发送。</p>
-      <button id="recommend-extract-job-btn">识别推荐页岗位</button>
-      <button id="recommend-scan-list-btn">扫描当前推荐列表</button>
-      <button id="recommend-extract-resume-btn">识别当前打开简历</button>
-      <button id="recommend-analyze-resume-btn">分析当前简历匹配</button>
-      <button id="recommend-generate-message-btn">生成打招呼话术</button>
-      <button id="recommend-save-candidate-btn">保存候选人</button>
+      <h2>推荐/搜索工作流</h2>
+      <p>支持 BOSS 推荐牛人 / 搜索 / 深度搜索；仅辅助识别、分析、生成话术，不会自动点击打招呼或自动发送。</p>
+      <p>当前模块：<span id="sourcing-module">-</span></p>
+      <p>当前岗位：<span id="sourcing-job-title">-</span></p>
+      <p>岗位库匹配状态：<span id="sourcing-job-profile-status">-</span></p>
+      <p>扫描候选人数：<span id="sourcing-scan-count">0</span></p>
+      <p>当前打开简历候选人：<span id="sourcing-resume-candidate">-</span></p>
+      <p>当前候选人匹配结果：<span id="sourcing-match-result">-</span></p>
+      <button id="sourcing-diagnose-btn">诊断BOSS页面</button>
+      <button id="sourcing-extract-job-btn">识别当前岗位</button>
+      <button id="sourcing-scan-list-btn">扫描当前列表</button>
+      <button id="sourcing-extract-resume-btn">识别打开的简历</button>
+      <button id="sourcing-analyze-candidate-btn">分析当前候选人</button>
+      <button id="sourcing-generate-message-btn">生成打招呼话术</button>
+      <button id="sourcing-save-candidate-btn">保存候选人</button>
+      <button id="sourcing-save-match-btn">保存匹配记录</button>
       <p id="recommend-workflow-status">未开始</p>
     </section>
 
