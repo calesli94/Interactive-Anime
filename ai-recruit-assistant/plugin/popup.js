@@ -21,9 +21,58 @@ const state = {
   sourcingDiagnostics:null,
   sourcingFrameId:null,
   bossFrameMap:null,
+  recommendWorkflowState:{
+    module_type:'recommend_module',
+    best_frame_id:null,
+    best_frame_url:'',
+    current_job:null,
+    scanned_candidates:[],
+    opened_candidate:null,
+    last_scan_debug:null,
+    last_action:'',
+  },
 };
 
 const $ = (id) => document.getElementById(id);
+
+function currentRecommendWorkflowState(){
+  if(!state.recommendWorkflowState){
+    state.recommendWorkflowState={module_type:'recommend_module',best_frame_id:null,best_frame_url:'',current_job:null,scanned_candidates:[],opened_candidate:null,last_scan_debug:null,last_action:''};
+  }
+  return state.recommendWorkflowState;
+}
+
+function updateRecommendWorkflowState(patch={}, lastAction=''){
+  const current=currentRecommendWorkflowState();
+  state.recommendWorkflowState={
+    ...current,
+    module_type:'recommend_module',
+    ...patch,
+    last_action:lastAction || patch.last_action || current.last_action || '',
+  };
+  if(state.recommendWorkflowState.best_frame_id!==null && state.recommendWorkflowState.best_frame_id!==undefined) state.sourcingFrameId=state.recommendWorkflowState.best_frame_id;
+  if(state.recommendWorkflowState.best_frame_url) state.sourcingModule='recommend_module';
+  return state.recommendWorkflowState;
+}
+
+function recommendWorkflowStateDebug(){
+  const rw=currentRecommendWorkflowState();
+  const names=(rw.scanned_candidates||[]).map((c)=>c?.name).filter(Boolean);
+  return {
+    best_frame_id: rw.best_frame_id ?? null,
+    best_frame_url: rw.best_frame_url || '',
+    current_job: rw.current_job || null,
+    scanned_candidate_count: (rw.scanned_candidates||[]).length,
+    scanned_candidate_names: names,
+    opened_candidate_name: rw.opened_candidate?.name || '',
+    last_action: rw.last_action || '',
+  };
+}
+
+function recommendStateIsActive(){
+  return state.sourcingModule==='recommend_module' || state.pageContext?.module_type==='recommend_module' || state.pageContext?.page_type==='recommend_page';
+}
+
 async function api(path, opts={}){ const r=await fetch(`${API}${path}`,opts); if(!r.ok){ let msg=`${path} ${r.status}`; try{ const j=await r.json(); msg=j.detail||msg; }catch{} throw new Error(msg); } return r.json(); }
 function notify(msg, type='info'){
   const text=String(msg||'');
@@ -341,21 +390,34 @@ async function executeAllFrames(tabId, func){
   });
 }
 
+function isRecommendBusinessFrameResult(frame){
+  return Boolean(frame
+    && /\/web\/frame\/recommend(?:[/?#]|$)/.test(frame.frame_url||'')
+    && (frame.body_text_length||0)>1000
+    && (frame.has_candidate_like_text===true || (frame.candidate_like_count||0)>0));
+}
+
 function selectBestBossFrame(frameResults=[]){
   const scored=(frameResults||[]).map((frame)=>{
     const roles=frame.frame_roles||[frame.frame_role].filter(Boolean);
     const text=`${frame.body_preview||''} ${frame.body_text_preview||''}`;
     const reasons=[];
     let score=0;
-    if(/\/web\/frame\/recommend(?:[/?#]|$)/.test(frame.frame_url||'')){ score+=10000; reasons.push('URL=/web/frame/recommend'); }
+    const recommendUrl=/\/web\/frame\/recommend(?:[/?#]|$)/.test(frame.frame_url||'');
+    const hasCandidateLike=frame.has_candidate_like_text===true || (frame.candidate_like_count||0)>0 || (/\d{2}岁/.test(text) && /本科|大专|硕士|博士/.test(text) && /10年以上|\d+年/.test(text));
+    if(recommendUrl){ score+=10000; reasons.push('URL=/web/frame/recommend'); }
+    if(recommendUrl && (frame.body_text_length||0)>1000 && hasCandidateLike){ score+=20000; reasons.push('recommend business source of truth'); }
     if(roles.includes('candidate_list_frame')){ score+=5000; reasons.push('role=candidate_list_frame'); }
     if((frame.body_text_length||0)>1000){ score+=1000; reasons.push('body_text_length>1000'); }
-    if(/\d{2}岁/.test(text) && /本科|大专|硕士|博士/.test(text) && /10年以上|\d+年/.test(text) && /打招呼/.test(text)){ score+=800; reasons.push('candidate-like text'); }
+    if(hasCandidateLike && /打招呼/.test(text)){ score+=800; reasons.push('candidate-like text'); }
     if(/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(text)){ score+=300; reasons.push('selected job salary'); }
     if(roles.includes('resume_modal_frame')){ score+=150; reasons.push('role=resume_modal_frame'); }
+    if(frame.is_top){ score-=5000; reasons.push('not top frame preferred'); }
+    if(roles.includes('chat_frame') && !recommendUrl){ score-=4000; reasons.push('avoid chat frame'); }
     return {...frame,__score:score,__reason:reasons.join('；')||'no strong business-frame signal'};
   }).sort((a,b)=>b.__score-a.__score);
-  const best=scored[0]||null;
+  const recommendBest=scored.find(isRecommendBusinessFrameResult);
+  const best=recommendBest || scored[0] || null;
   return {
     best_frame_id: best?.frame_id ?? null,
     best_frame_url: best?.frame_url || '',
@@ -391,6 +453,9 @@ async function diagnoseBossPage(){
   state.bossFrameMap={top_url:tab.url||'',frames,frame_selection_debug:selection};
   state.sourcingFrameId=selection.best_frame_id ?? chosen?.frame_id ?? null;
   state.sourcingModule=overallModuleTypeFromFrames(frames);
+  if(state.sourcingModule==='recommend_module'){
+    updateRecommendWorkflowState({best_frame_id:state.sourcingFrameId,best_frame_url:selection.best_frame_url,last_scan_debug:{diagnose:selection}}, 'diagnose');
+  }
   renderSourcingStatus();
   return {ok:true,top_url:tab.url||'',frames,frame_selection_debug:selection};
 }
@@ -400,17 +465,21 @@ async function sendToSourcingFrame(message){
   if(!active.ok) return {ok:false,error:`无法获取当前标签页：${active.error}`};
   const tab=active.tab;
   if(!tab?.id) return {ok:false,error:'未找到当前活动标签页'};
-  if(state.sourcingFrameId===null || state.sourcingFrameId===undefined){
+  const needDiagnose=state.sourcingFrameId===null || state.sourcingFrameId===undefined || state.sourcingModule==='recommend_module' || currentRecommendWorkflowState().best_frame_url;
+  if(needDiagnose){
     const diag=await diagnoseBossPage();
     if(!diag.ok) return diag;
   }
-  let options=state.sourcingFrameId!==null && state.sourcingFrameId!==undefined ? {frameId:state.sourcingFrameId} : {};
+  const rw=currentRecommendWorkflowState();
+  const frameId=(state.sourcingModule==='recommend_module' && rw.best_frame_id!==null && rw.best_frame_id!==undefined) ? rw.best_frame_id : state.sourcingFrameId;
+  let options=frameId!==null && frameId!==undefined ? {frameId} : {};
   let res=await sendMessageToTab(tab.id,message,options);
   if(res && !res.__message_error) return res;
   await injectContentScript(tab.id,{allFrames:true});
   await sleep(200);
   res=await sendMessageToTab(tab.id,message,options);
   if(res && !res.__message_error) return res;
+  if(state.sourcingModule==='recommend_module') return {ok:false,error:'推荐工作流未能连接到最佳 /web/frame/recommend 业务 frame，请刷新页面后重试'};
   return sendToContent(message);
 }
 
@@ -422,15 +491,24 @@ async function checkService(){
 
 function renderSourcingStatus(){
   const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
-  set('sourcing-module', state.sourcingModule || state.pageContext?.module_type || state.pageContext?.page_type || '-');
-  set('sourcing-job-title', state.job?.title ? `${state.job.title}${state.job.city?` / ${state.job.city}`:''}${state.job.salary?` / ${state.job.salary}`:''}` : '-');
-  set('sourcing-job-profile-status', state.job?.title ? (hasJobDetail() ? '已加载岗位库/JD' : '当前岗位缺少完整JD，请先保存岗位要求或从岗位库选择。') : '-');
-  set('sourcing-scan-count', (state.scannedCandidates||[]).length);
-  set('sourcing-resume-candidate', state.candidate?.name || '-');
-  const best=state.sourcingDiagnostics?.frame_selection_debug || state.bossFrameMap?.frame_selection_debug;
-  set('sourcing-best-frame', best?.best_frame_id!==null && best?.best_frame_id!==undefined ? `Frame ${best.best_frame_id} / ${(best.frame_roles||[]).join('/')}` : '-');
+  const rw=currentRecommendWorkflowState();
+  const useRecommend=recommendStateIsActive();
+  const moduleText=useRecommend ? 'recommend_module' : (state.sourcingModule || state.pageContext?.module_type || state.pageContext?.page_type || '-');
+  const job=useRecommend ? (rw.current_job || null) : state.job;
+  const scanned=useRecommend ? (rw.scanned_candidates||[]) : (state.scannedCandidates||[]);
+  const opened=useRecommend ? (rw.opened_candidate||null) : state.candidate;
+  set('sourcing-module', moduleText);
+  set('sourcing-job-title', job?.title ? `${job.title}${job.city?` / ${job.city}`:''}${job.salary?` / ${job.salary}`:''}` : '-');
+  set('sourcing-job-profile-status', job?.title ? (hasJobDetail() ? 'matched' : 'unmatched') : '-');
+  set('sourcing-scan-count', scanned.length);
+  set('sourcing-scan-names', scanned.length ? scanned.slice(0,5).map((c)=>c.name).filter(Boolean).join('、') + (scanned.length>5?'...':'') : '-');
+  set('sourcing-resume-candidate', opened?.name || '未打开');
+  const best=useRecommend ? {best_frame_id:rw.best_frame_id,best_frame_url:rw.best_frame_url,frame_roles:['recommend_business_frame']} : (state.sourcingDiagnostics?.frame_selection_debug || state.bossFrameMap?.frame_selection_debug);
+  set('sourcing-best-frame', best?.best_frame_id!==null && best?.best_frame_id!==undefined ? `Frame ${best.best_frame_id}${best.best_frame_url?` / ${best.best_frame_url}`:''}` : '-');
   const match=state.priorityResult ? `${state.priorityResult.score??'-'} / ${state.priorityResult.level||'-'} / ${state.priorityResult.recommended_action||state.priorityResult.recommendation||'-'}` : '-';
   set('sourcing-match-result', match);
+  const debug=$('recommend-workflow-debug');
+  if(debug) debug.textContent=JSON.stringify({recommend_workflow_state_debug:recommendWorkflowStateDebug()},null,2);
 }
 
 function renderContext(){
@@ -555,7 +633,7 @@ function renderChatContext(){
   $('chat-candidate-name').textContent=textOrDash(chat.candidate_name);
   const cName=state.candidate?.name||'';
   const chName=chat.candidate_name||'';
-  $('chat-context-warning').textContent=(cName&&chName&&cName!==chName)?'当前聊天对象与已分析候选人不一致，请刷新上下文':'';
+  $('chat-context-warning').textContent=recommendStateIsActive() ? '' : ((cName&&chName&&cName!==chName)?'当前聊天对象与已分析候选人不一致，请刷新上下文':'');
 }
 
 function applyJobProfile(profile, status='已加载岗位要求库', source='profile_store'){
@@ -640,9 +718,11 @@ async function refreshContext(){
       state.scannedCandidates=listRes?.candidates||[];
       if(modalRes?.modal_found && modalRes?.candidate?.name) state.candidate=modalRes.candidate;
       else state.candidate={};
+      updateRecommendWorkflowState({current_job:state.job,scanned_candidates:state.scannedCandidates,opened_candidate:state.candidate?.name?state.candidate:null,last_scan_debug:{job:jobRes?.debug||null,list:listRes?.debug||null,resume:modalRes?.debug||null}}, 'refresh_context');
       state.chat=state.pageContext.chat;
       state.contextId=state.pageContext.context_id;
       if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
+      if(state.job?.title) updateRecommendWorkflowState({current_job:state.job}, 'refresh_context');
       renderContext();
       renderScannedCandidates();
       setRecommendWorkflowStatus(`推荐页上下文已刷新：${state.job?.title||'-'} / 候选 ${state.scannedCandidates.length}`);
@@ -946,10 +1026,17 @@ async function diagnoseBossWorkflow(){
   const res=await diagnoseBossPage();
   if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'诊断失败'); feedback(res?.error||'诊断失败','warn'); return; }
   const frames=res.frames||[];
-  const hit=frames.find((f)=>f.has_candidate_like_text || f.body_text_length>1000);
-  setRecommendWorkflowStatus(`诊断完成：${frames.length} 个 frame，候选 frame=${hit?hit.frame_id:'未发现'}`);
-  const debug=$('debug-dom-output'); if(debug) debug.textContent=JSON.stringify(res,null,2).slice(0,5000);
-  feedback(hit?'诊断完成：发现候选人文本 frame':'诊断完成：未发现明显候选人文本，请查看 DOM 调试输出', hit?'info':'warn');
+  const selection=res.frame_selection_debug||selectBestBossFrame(frames);
+  const best=selection.frame || frames.find((f)=>f.frame_id===selection.best_frame_id);
+  updateRecommendWorkflowState({
+    best_frame_id: selection.best_frame_id ?? best?.frame_id ?? null,
+    best_frame_url: selection.best_frame_url || best?.frame_url || '',
+    last_scan_debug: {diagnose:{frames_count:frames.length,selection}},
+  }, 'diagnose');
+  const ok=isRecommendBusinessFrameResult(best);
+  setRecommendWorkflowStatus(`诊断完成：${frames.length} 个 frame，最佳推荐 frame=${best?best.frame_id:'未发现'}`);
+  const debug=$('debug-dom-output'); if(debug) debug.textContent=JSON.stringify({...res,recommend_workflow_state_debug:recommendWorkflowStateDebug()},null,2).slice(0,5000);
+  feedback(ok?'诊断完成：已定位 /web/frame/recommend 业务 frame':'诊断完成：未发现符合条件的推荐业务 frame，请查看 DOM 调试输出', ok?'info':'warn');
 }
 
 async function extractRecommendJobWorkflow(){
@@ -957,10 +1044,13 @@ async function extractRecommendJobWorkflow(){
   const res=await sendToSourcingFrame({type:'EXTRACT_SOURCING_JOB'});
   if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'当前岗位识别失败'); feedback(res?.error||'当前岗位识别失败','warn'); return; }
   state.sourcingModule=res.module_type||state.sourcingModule;
-  state.job=res.job||{title:res.title||'',city:res.city||'',salary:res.salary||'',source:'sourcing_job_selector',jd_complete:false};
-  state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'sourcing_page',url:state.pageContext?.url||res.url||'',job:state.job};
+  const parsedJob=res.job||{title:res.title||'',city:res.city||'',salary:res.salary||'',source:'recommend_frame_job_selector',jd_complete:false};
+  state.job={...parsedJob,source:parsedJob.source||'recommend_frame_job_selector',jd_complete:false};
+  updateRecommendWorkflowState({current_job:state.job,last_scan_debug:{job_debug:res.debug||null}}, 'extract_job');
+  state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'recommend_page',url:currentRecommendWorkflowState().best_frame_url||state.pageContext?.url||res.url||'',job:state.job};
   state.jobProfileMatches=[];
   if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
+  if(state.job?.title) updateRecommendWorkflowState({current_job:{...(currentRecommendWorkflowState().current_job||{}),...(state.job||{})}}, 'extract_job');
   renderJob();
   setRecommendWorkflowStatus(`已识别当前岗位：${state.job.title||'-'} / ${state.job.city||'-'} / ${state.job.salary||'-'}`);
   feedback(hasJobDetail()?'当前岗位已识别并加载岗位库':'当前岗位缺少完整JD，请先保存岗位要求或从岗位库选择。', hasJobDetail()?'info':'warn');
@@ -971,20 +1061,28 @@ async function scanRecommendListWorkflow(){
   const res=await sendToSourcingFrame({type:'SCAN_SOURCING_LIST'});
   if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'列表扫描失败'); feedback(res?.error||'列表扫描失败','warn'); return; }
   state.sourcingModule=res.module_type||state.sourcingModule;
-  state.scannedPageType=res.page_type||res.module_type||'sourcing_page';
+  state.scannedPageType=res.page_type||res.module_type||'recommend_page';
   state.scannedCandidates=await quickScoreScannedCandidates(res.candidates||[]);
+  updateRecommendWorkflowState({scanned_candidates:state.scannedCandidates,last_scan_debug:res.debug||null}, 'scan_list');
   renderScannedCandidates();
-  setRecommendWorkflowStatus(`列表扫描完成：${state.scannedCandidates.length} 位候选人`);
+  setRecommendWorkflowStatus(`列表扫描完成：${state.scannedCandidates.length} 位候选人：${state.scannedCandidates.slice(0,5).map((c)=>c.name).filter(Boolean).join('、')||'-'}`);
   feedback(`列表扫描完成：${state.scannedCandidates.length} 位候选人`);
 }
 
 async function extractRecommendResumeWorkflow(){
   feedback('正在识别当前打开的简历...');
   const res=await sendToSourcingFrame({type:'EXTRACT_SOURCING_RESUME_MODAL'});
-  if(!res?.ok){ setRecommendWorkflowStatus(res?.error||'简历识别失败'); feedback(res?.error||'简历识别失败','warn'); return; }
+  if(!res?.ok){
+    updateRecommendWorkflowState({opened_candidate:null,last_scan_debug:{resume_debug:res?.debug||null,message:res?.error||''}}, 'extract_resume');
+    renderSourcingStatus();
+    setRecommendWorkflowStatus(res?.error||'未检测到已打开的推荐候选人详情，请先点击候选人姓名打开详情');
+    feedback(res?.error||'未检测到已打开的推荐候选人详情，请先点击候选人姓名打开详情','warn');
+    return;
+  }
   state.sourcingModule=res.module_type||state.sourcingModule;
   state.candidate=res.candidate||{};
-  state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'sourcing_page',candidate:state.candidate};
+  updateRecommendWorkflowState({opened_candidate:state.candidate,last_scan_debug:{resume_debug:res.debug||null}}, 'extract_resume');
+  state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'recommend_page',candidate:state.candidate};
   renderCandidate();
   setRecommendWorkflowStatus(`已识别当前简历：${state.candidate.name||'-'} / ${state.candidate.expected_position||state.candidate.current_title||'-'}`);
   feedback('当前打开简历已识别');
@@ -1246,7 +1344,7 @@ async function debugDom(){
       res={...(bestDebug?.ok?bestDebug:res),top_frame_debug:res,frame_selection_debug:{overall_module_type:'recommend_module',best_frame_id:selection.best_frame_id,best_frame_url:selection.best_frame_url,best_frame_roles:selection.frame_roles,reason:selection.reason}};
     }
   }catch(e){ console.warn('recommend DEBUG_DOM frame merge failed', e); }
-  $('debug-dom-output').textContent=JSON.stringify(res,null,2).slice(0,5000);
+  $('debug-dom-output').textContent=JSON.stringify({...res,recommend_workflow_state_debug:recommendWorkflowStateDebug()},null,2).slice(0,5000);
   feedback(res?.ok?'DOM 调试信息已输出':(res?.error||'DOM 调试失败'));
 }
 

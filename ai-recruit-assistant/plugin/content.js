@@ -2135,7 +2135,7 @@
 
 
   const RECOMMEND_JOB_SELECTOR_RE = /([\u4e00-\u9fa5A-Za-z0-9·/（）()_-]{2,30})\s*[_｜|]?\s*(北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京|厦门|长沙|西安)\s*[_｜|]?\s*(\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/g;
-  const RECOMMEND_BAD_JOB_TITLES = ["推荐", "精选", "最新", "筛选", "全部", "面试", "沟通", "上海", "重庆"];
+  const RECOMMEND_BAD_JOB_TITLES = ["推荐", "精选", "最新", "筛选", "全部", "面试", "沟通", "上海", "重庆", "北京", "广州"];
 
   function normalizeRecommendSalary(value) {
     return oneLine(value).replace(/\s+/g, "").replace(/[~—至]/g, "-").replace(/k/g, "K");
@@ -2160,22 +2160,30 @@
   function recommendJobParseCandidatesFromFrame() {
     const candidates = [];
     const seen = new Set();
-    const addCandidate = (rawText, rect = null, source = "text") => {
+    const addParsedCandidate = (match, top = 9999, left = 9999, source = "text") => {
+      const title = validRecommendJobTitle(match[1]);
+      if (!title) return;
+      const city = match[2] || "";
+      const salary = normalizeRecommendSalary(match[3] || "");
+      const key = `${title}|${city}|${salary}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push({ title, city, salary, raw_text: oneLine(match[0]), source, top, left });
+    };
+    const scanText = (rawText, top = 9999, left = 9999, source = "text", firstOnly = false) => {
       const text = oneLine(rawText);
       if (!text) return;
       RECOMMEND_JOB_SELECTOR_RE.lastIndex = 0;
       let match;
       while ((match = RECOMMEND_JOB_SELECTOR_RE.exec(text))) {
-        const title = validRecommendJobTitle(match[1]);
-        if (!title) continue;
-        const city = match[2] || "";
-        const salary = normalizeRecommendSalary(match[3] || "");
-        const key = `${title}|${city}|${salary}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        candidates.push({ title, city, salary, raw_text: oneLine(match[0]), source, top: rect ? Math.round(rect.top) : 9999, left: rect ? Math.round(rect.left) : 9999 });
+        const before = text.slice(Math.max(0, (match.index || 0) - 24), match.index || 0);
+        if (/候选人|牛人|岁|本科|大专|硕士|博士|打招呼|期望/.test(before)) continue;
+        addParsedCandidate(match, top, left, source);
+        if (firstOnly && candidates.length) return;
       }
     };
+    scanText(recommendTextForBestFrame().slice(0, 1800), 0, 0, "best_frame_text_top_first", true);
+    if (candidates.length) return candidates;
     for (const node of Array.from(document.querySelectorAll("button, [role='button'], [class*='select'], [class*='dropdown'], [class*='job'], [class*='position'], span, div")).slice(0, 3000)) {
       if (!(node instanceof Element) || isExtensionDom(node)) continue;
       const rect = node.getBoundingClientRect();
@@ -2183,10 +2191,10 @@
       const text = oneLine(node.innerText || node.textContent || "");
       if (text.length < 5 || text.length > 220) continue;
       if (!/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议/.test(text)) continue;
-      addCandidate(text, rect, "dropdown_like_dom");
+      scanText(text, Math.round(rect.top), Math.round(rect.left), "dropdown_like_dom");
     }
-    addCandidate(recommendTextForBestFrame().slice(0, 2500), null, "best_frame_text_top");
-    return candidates.sort((a, b) => (a.source === "dropdown_like_dom" ? -1 : 1) - (b.source === "dropdown_like_dom" ? -1 : 1) || a.top - b.top || a.raw_text.length - b.raw_text.length);
+    scanText(recommendTextForBestFrame().slice(0, 2500), 9999, 9999, "best_frame_text_top");
+    return candidates.sort((a, b) => a.top - b.top || a.raw_text.length - b.raw_text.length);
   }
 
   function extractRecommendJobFromBestFrame() {
@@ -2251,7 +2259,7 @@
     const exp = parseExperience(raw);
     const expected = expectedPartsFromRecommendSegment(raw);
     return {
-      name: segment.name || "",
+      name: validRecommendCandidateName(segment.name || ""),
       age: parseAge(raw),
       experience_years: exp.experience_years,
       experience_years_text: exp.experience_years_text || "",
@@ -2264,7 +2272,7 @@
       schools: extractSchoolsFromCard(raw),
       highlights: extractHighlightsFromCard(raw).length ? extractHighlightsFromCard(raw) : linesOf(raw).filter((line) => /优势|负责|经验|熟悉|项目/.test(line)).slice(0, 8),
       raw_text: raw.slice(0, 5000),
-      source: "recommend_best_frame_card",
+      source: "recommend_frame_card",
       source_url: location.href,
       profile_complete: false,
     };
@@ -2288,23 +2296,44 @@
     return { ok: true, module_type: "recommend_module", page_type: "recommend_page", candidates, count: candidates.length, debug: { strategy: "candidate_body_salary_name_segmentation", container: recommendContainerDebug(), candidate_segments_count: segments.length, candidate_accepted_count: candidates.length, candidate_previews: previews.slice(0, 20) } };
   }
 
+  function validRecommendCandidateName(name) {
+    const value = oneLine(name);
+    if (!value || value.length < 2 || value.length > 6) return "";
+    if (/推荐|精选|最新|筛选|全部|职位|岗位|重庆|上海|北京|广州|深圳|打招呼|沟通/.test(value)) return "";
+    return value;
+  }
+
   function extractRecommendResumeModalFromBestFrame() {
     const raw = recommendTextForBestFrame();
-    const headers = Array.from(raw.matchAll(/([\u4e00-\u9fa5]{2,6})\s*(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)?\s*\d{2}\s*岁/g));
+    const detailSignal = /工作经历|教育经历|专业技能|牛人分析器/.test(raw);
+    const headers = Array.from(raw.matchAll(/(?:\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)?\s*([\u4e00-\u9fa5]{2,6})\s*(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)?\s*\d{2}\s*岁/g));
     const candidates = [];
     for (let i = 0; i < headers.length; i += 1) {
+      const name = validRecommendCandidateName(headers[i][1]);
+      if (!name) continue;
       const start = headers[i].index || 0;
       const end = i + 1 < headers.length ? headers[i + 1].index : raw.length;
       const segment = raw.slice(start, end).trim();
-      const hasResume = /工作经历/.test(segment) && /期望职位/.test(segment) && /教育经历/.test(segment);
-      if (!hasResume) continue;
-      candidates.push({ name: headers[i][1], raw_text: segment, start, text_preview: oneLine(segment).slice(0, 500) });
+      const hasResume = /工作经历|教育经历|专业技能|牛人分析器/.test(segment);
+      const hasHeader = /\d{2}\s*岁/.test(segment) && /本科|大专|硕士|博士/.test(segment);
+      if (!(hasResume && hasHeader && segment.length > 500)) continue;
+      candidates.push({ name, raw_text: segment, start, text_preview: oneLine(segment).slice(0, 500), score: segment.length + (/(工作经历|教育经历)/.test(segment) ? 1000 : 0) });
     }
-    const selected = candidates.sort((a, b) => b.raw_text.length - a.raw_text.length)[0] || null;
-    if (!selected) return { ok: false, modal_found: false, candidate: emptyCandidate("recommend_best_frame_resume_modal"), error: "最佳业务 Frame 未检测到已打开的简历弹窗", debug: { modal_found: false, header_count: headers.length, modal_candidate_preview: null } };
-    const parsed = recommendTextCandidateFromSegment({ name: selected.name, raw_text: selected.raw_text }, "recommend_best_frame_resume_modal");
-    const candidate = { ...parsed, name: selected.name || parsed.name || "", source: "recommend_best_frame_resume_modal", profile_complete: true };
-    return { ok: Boolean(candidate.name), modal_found: true, module_type: "recommend_module", candidate, debug: { modal_found: true, header_count: headers.length, modal_candidate_preview: { name: candidate.name, text_preview: selected.text_preview } } };
+    const domDetails = Array.from(document.querySelectorAll("[class*='detail'], [class*='resume'], [class*='profile'], [class*='geek'], [class*='candidate'], aside, section, div")).slice(0, 3000)
+      .filter((node) => node instanceof Element && !isExtensionDom(node))
+      .map((node) => ({ node, text: cleanText(node.innerText || node.textContent || ""), rect: node.getBoundingClientRect() }))
+      .filter((item) => item.text.length > 500 && /工作经历|教育经历|专业技能|牛人分析器/.test(item.text) && /\d{2}\s*岁/.test(item.text) && /本科|大专|硕士|博士/.test(item.text));
+    for (const item of domDetails) {
+      const header = item.text.match(/([\u4e00-\u9fa5]{2,6})\s*(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)?\s*\d{2}\s*岁/) || item.text.match(/(?:\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)\s*([\u4e00-\u9fa5]{2,6})[\s\S]{0,40}?\d{2}\s*岁/);
+      const name = validRecommendCandidateName(header?.[1] || "");
+      if (!name) continue;
+      candidates.push({ name, raw_text: item.text, start: Math.max(0, Math.round(item.rect.top)), text_preview: oneLine(item.text).slice(0, 500), score: item.text.length + 2000 });
+    }
+    const selected = candidates.sort((a, b) => b.score - a.score || b.raw_text.length - a.raw_text.length)[0] || null;
+    if (!selected) return { ok: false, modal_found: false, candidate: null, error: "未检测到已打开的推荐候选人详情，请先点击候选人姓名打开详情", debug: { modal_found: false, detail_signal: detailSignal, header_count: headers.length, modal_candidate_preview: null } };
+    const parsed = recommendTextCandidateFromSegment({ name: selected.name, raw_text: selected.raw_text }, "recommend_frame_resume_modal");
+    const candidate = { ...parsed, name: selected.name || parsed.name || "", source: "recommend_frame_resume_modal", profile_complete: true };
+    return { ok: Boolean(candidate.name), modal_found: true, module_type: "recommend_module", candidate, opened_candidate: candidate, debug: { modal_found: true, detail_signal: detailSignal, header_count: headers.length, modal_candidate_preview: { name: candidate.name, text_preview: selected.text_preview } } };
   }
 
   function recommendExtractionDebugFromBestFrame() {
