@@ -126,10 +126,62 @@
 
 
     <section class="card">
+      <h2>半自动打招呼工作流</h2>
+      <p><b>默认人工确认。</b> manual 只生成话术；assist 需点击确认后仅填入；auto 为高风险，默认关闭，需显式启用并二次确认。</p>
+      <p>当前岗位：<span id="semi-job-title">-</span></p>
+      <p>岗位标准：<span id="semi-standard-status">未配置</span></p>
+      <p>扫描候选人数：<span id="semi-scanned-count">0</span></p>
+      <p>队列人数：<span id="semi-queue-count">0</span></p>
+      <p>当前处理候选人：<span id="semi-current-candidate">-</span></p>
+      <p>匹配分：<span id="semi-match-score">-</span></p>
+      <p>推荐动作：<span id="semi-recommended-action">-</span></p>
+      <p>当前模式：<span id="semi-current-mode">manual</span></p>
+      <p class="warn">Auto 高风险：<span id="semi-auto-status">未启用</span></p>
+      <details>
+        <summary>配置岗位标准</summary>
+        <textarea id="standard-must-have" placeholder="必备关键词，逗号分隔"></textarea>
+        <textarea id="standard-nice-have" placeholder="加分关键词，逗号分隔"></textarea>
+        <textarea id="standard-reject" placeholder="拒绝/风险关键词，逗号分隔"></textarea>
+        <input id="standard-target-city" placeholder="目标城市" />
+        <input id="standard-min-experience" type="number" min="0" placeholder="最低年限" />
+        <input id="standard-max-salary" placeholder="最高薪资，例如 50K" />
+        <input id="standard-required-education" placeholder="学历要求，例如 本科" />
+        <textarea id="standard-required-companies" placeholder="必备公司/行业背景，逗号分隔"></textarea>
+        <textarea id="standard-preferred-companies" placeholder="偏好公司，逗号分隔"></textarea>
+        <textarea id="standard-project-types" placeholder="偏好项目类型，逗号分隔"></textarea>
+        <textarea id="standard-styles" placeholder="偏好风格，逗号分隔"></textarea>
+        <textarea id="standard-scoring-weights" placeholder='评分权重 JSON，可选，例如 {"must":40,"nice":20}'></textarea>
+        <button id="semi-save-standard-btn">保存岗位标准</button>
+      </details>
+      <fieldset>
+        <legend>Auto 安全控制</legend>
+        <label><input id="semi-auto-enabled" type="checkbox" /> 显式启用 auto（高风险）</label>
+        <input id="semi-match-threshold" type="number" min="0" max="100" value="80" placeholder="最低匹配分" />
+        <input id="semi-daily-limit" type="number" min="1" value="20" placeholder="每日自动发送上限" />
+        <input id="semi-min-delay" type="number" min="1" value="30" placeholder="最小延迟秒" />
+        <input id="semi-max-delay" type="number" min="1" value="90" placeholder="最大延迟秒" />
+        <button id="semi-save-safety-btn">保存安全设置</button>
+      </fieldset>
+      <button id="semi-add-queue-btn">加入推荐队列</button>
+      <button id="semi-start-btn">开始半自动处理</button>
+      <button id="semi-pause-btn">暂停</button>
+      <button id="semi-resume-btn">继续</button>
+      <button id="semi-skip-btn">跳过当前候选人</button>
+      <button id="semi-analyze-btn">分析当前候选人</button>
+      <button id="semi-generate-btn">生成话术</button>
+      <button id="semi-fill-btn">填入输入框</button>
+      <button id="semi-confirm-send-btn">确认发送</button>
+      <button id="semi-stop-btn">STOP ALL</button>
+      <p id="semi-workflow-status">未开始</p>
+      <div id="semi-queue-list"></div>
+    </section>
+
+
+    <section class="card">
       <h2>打招呼模式</h2>
-      <p>当前模式：<span id="current-mode">assist</span></p>
-      <label><input type="radio" name="greet_mode" value="manual" />manual</label>
-      <label><input type="radio" name="greet_mode" value="assist" checked />assist</label>
+      <p>当前模式：<span id="current-mode">manual</span></p>
+      <label><input type="radio" name="greet_mode" value="manual" checked />manual</label>
+      <label><input type="radio" name="greet_mode" value="assist" />assist</label>
       <label><input type="radio" name="greet_mode" value="auto" />auto</label>
       <button id="save-mode-btn">保存设置</button>
     </section>

@@ -160,7 +160,7 @@ def rule_match_analyze(payload: MatchAnalyzeRequest) -> dict:
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page() -> str:
     m = get_mode_config()
-    mode = m.mode.replace("模式", "").lower().replace("自动辅助", "assist").replace("人工", "manual").replace("自动", "auto")
+    mode = m.mode.replace("模式", "").lower().replace("自动辅助", "assist").replace("人工", "manual").replace("自动", "auto") or "manual"
     return f"""
     <!doctype html>
     <html lang="zh-CN">
@@ -191,7 +191,7 @@ def settings_page() -> str:
 
 @app.post("/settings/save")
 def settings_save_form(
-    greet_mode: str = Form("assist"),
+    greet_mode: str = Form("manual"),
     auto_enabled: str | None = Form(None),
     min_score: int = Form(60),
     daily_limit: int = Form(20),
@@ -202,7 +202,7 @@ def settings_save_form(
 ):
     _ = auto_enabled, interval_max_seconds, max_continuous_actions, require_confirm_before_auto
     mode_map = {"manual": "人工模式", "assist": "自动辅助模式", "auto": "自动模式"}
-    mode = mode_map.get(greet_mode, "自动辅助模式")
+    mode = mode_map.get(greet_mode, "人工模式")
     save_mode_config(GreetingModeConfig(mode=mode, daily_limit=daily_limit, interval_seconds=interval_min_seconds))
     _ = min_score
     return RedirectResponse(url="/settings", status_code=303)
@@ -1745,15 +1745,17 @@ def message_generate(payload: dict) -> dict:
 @app.get("/api/settings")
 def settings_get() -> dict:
     m = get_mode_config()
-    return {"mode": m.mode.replace("模式", "").lower().replace("自动辅助", "assist").replace("人工", "manual").replace("自动", "auto"), "min_score": 60}
+    mode = m.mode.replace("模式", "").lower().replace("自动辅助", "assist").replace("人工", "manual").replace("自动", "auto") or "manual"
+    return {"mode": mode, "greeting_mode": mode, "min_score": 60, "auto_enabled": False, "match_threshold": 80, "daily_send_limit": 20, "min_delay_seconds": 30, "max_delay_seconds": 90}
 
 
 @app.post("/api/settings")
 def settings_save(payload: dict) -> dict:
     mode_map = {"manual": "人工模式", "assist": "自动辅助模式", "auto": "自动模式"}
-    mode = mode_map.get(payload.get("mode", "assist"), "自动辅助模式")
-    save_mode_config(GreetingModeConfig(mode=mode, daily_limit=20, interval_seconds=60))
-    return {"status": "ok", "mode": payload.get("mode", "assist"), "min_score": payload.get("min_score", 60)}
+    requested = payload.get("greeting_mode") or payload.get("mode", "manual")
+    mode = mode_map.get(requested, "人工模式")
+    save_mode_config(GreetingModeConfig(mode=mode, daily_limit=int(payload.get("daily_send_limit", 20) or 20), interval_seconds=int(payload.get("min_delay_seconds", 60) or 60)))
+    return {"status": "ok", "mode": requested, "greeting_mode": requested, "min_score": payload.get("min_score", 60), "auto_enabled": bool((payload.get("auto_safety") or {}).get("auto_enabled", False))}
 
 
 @app.post("/api/queue/add")

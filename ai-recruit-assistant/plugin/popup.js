@@ -31,6 +31,14 @@ const state = {
     last_scan_debug:null,
     last_action:'',
   },
+  greetingMode:'manual',
+  jobStandard:null,
+  recommendQueue:[],
+  recommendQueueRunning:false,
+  recommendQueuePaused:false,
+  recommendStopAll:false,
+  currentQueueIndex:0,
+  autoSafety:{auto_enabled:false,match_threshold:80,daily_send_limit:20,min_delay_seconds:30,max_delay_seconds:90},
 };
 
 const $ = (id) => document.getElementById(id);
@@ -83,6 +91,33 @@ function notify(msg, type='info'){
 }
 function feedback(msg, type='info'){ notify(msg, type); }
 function textOrDash(v){ return v ? String(v) : '-'; }
+
+function listFromInput(id){ return splitKeywords($(id)?.value||''); }
+function setValue(id,value){ const el=$(id); if(el) el.value=value ?? ''; }
+function todayKey(){ return new Date().toISOString().slice(0,10); }
+function jobStandardKey(job=state.job||{}){ return `job_standard:${job.title||'unknown'}:${job.city||''}`; }
+function greetedKey(){ return `recommend_greeted:${todayKey()}`; }
+function autoCountKey(){ return `recommend_auto_sent:${todayKey()}`; }
+function getGreetedSet(){ try{return new Set(JSON.parse(localStorage.getItem(greetedKey())||'[]'));}catch{return new Set();} }
+function saveGreetedSet(set){ localStorage.setItem(greetedKey(), JSON.stringify([...set])); }
+function autoSentToday(){ return Number(localStorage.getItem(autoCountKey())||0); }
+function bumpAutoSentToday(){ const next=autoSentToday()+1; localStorage.setItem(autoCountKey(), String(next)); return next; }
+function candidateQueueKey(candidate){ return `${candidate?.name||''}|${candidate?.salary_expectation||''}|${candidate?.age||''}`; }
+function currentQueueItem(){ return state.recommendQueue[state.currentQueueIndex] || state.recommendQueue.find((item)=>!['sent','skipped','failed'].includes(item.status)) || null; }
+function queueStatusCounts(){ return state.recommendQueue.reduce((acc,item)=>{ acc[item.status]=(acc[item.status]||0)+1; return acc; },{}); }
+function normalizeRecommendedAction(action=''){
+  const raw=String(action||'').toLowerCase();
+  if(/connect|推进|建立|优先|high|s|a/.test(raw)) return 'connect';
+  if(/observe|观察|了解|assist|manual|b|c/.test(raw)) return 'observe';
+  if(/reject|拒绝|不合适|d/.test(raw)) return 'reject';
+  return raw || 'skip';
+}
+function randomDelayMs(){
+  const min=Math.max(1, Number(state.autoSafety.min_delay_seconds||30));
+  const max=Math.max(min, Number(state.autoSafety.max_delay_seconds||90));
+  return Math.round((min + Math.random()*(max-min))*1000);
+}
+function setSemiStatus(text){ const el=$('semi-workflow-status'); if(el) el.textContent=text||'-'; renderSemiAutoWorkflow(); }
 function htmlEscape(v){ return String(v??'').replace(/[&<>"']/g,(s)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 function hasJobDetail(){ return Boolean(state.job?.jd_complete || state.job?.description || (state.job?.requirements||[]).length || (state.job?.responsibilities||[]).length); }
 function splitLines(value){
@@ -509,6 +544,7 @@ function renderSourcingStatus(){
   set('sourcing-match-result', match);
   const debug=$('recommend-workflow-debug');
   if(debug) debug.textContent=JSON.stringify({recommend_workflow_state_debug:recommendWorkflowStateDebug()},null,2);
+  if($('semi-queue-count')) renderSemiAutoWorkflow();
 }
 
 function renderContext(){
@@ -722,6 +758,7 @@ async function refreshContext(){
       state.chat=state.pageContext.chat;
       state.contextId=state.pageContext.context_id;
       if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
+      if(state.job?.title) await loadJobStandard();
       if(state.job?.title) updateRecommendWorkflowState({current_job:state.job}, 'refresh_context');
       renderContext();
       renderScannedCandidates();
@@ -810,6 +847,10 @@ function jobConfigForApi(){
   const responsibilities=splitLines(job.responsibilities?.length ? job.responsibilities : manualResponsibilities);
   const requirements=splitLines(job.requirements?.length ? job.requirements : manualRequirements);
   const preferred_keywords=splitKeywords((job.preferred_keywords||[]).length ? job.preferred_keywords : manualKeywords);
+  const standard=state.jobStandard||{};
+  const standardMust=standard.must_have_keywords||[];
+  const standardNice=standard.nice_to_have_keywords||[];
+  const standardReject=standard.reject_keywords||[];
   return {
     title: job.title||'',
     job_title: job.title||'',
@@ -820,12 +861,14 @@ function jobConfigForApi(){
     description,
     responsibilities,
     requirements,
-    required_skills: requirements.length ? requirements : (job.keywords||[]),
-    preferred_keywords: preferred_keywords.length ? preferred_keywords : (job.keywords||requirements||[]),
+    required_skills: requirements.length ? [...requirements, ...standardMust] : (standardMust.length ? standardMust : (job.keywords||[])),
+    preferred_keywords: [...(preferred_keywords.length ? preferred_keywords : (job.keywords||requirements||[])), ...standardNice, ...standardMust],
+    reject_keywords: standardReject,
     jd_complete: Boolean(job.jd_complete || description || requirements.length || responsibilities.length),
     source: job.source||'',
     raw_text: job.raw_text||'',
     urgency:'high',
+    job_standard: standard,
   };
 }
 
@@ -1050,6 +1093,7 @@ async function extractRecommendJobWorkflow(){
   state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'recommend_page',url:currentRecommendWorkflowState().best_frame_url||state.pageContext?.url||res.url||'',job:state.job};
   state.jobProfileMatches=[];
   if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
+  if(state.job?.title) await loadJobStandard();
   if(state.job?.title) updateRecommendWorkflowState({current_job:{...(currentRecommendWorkflowState().current_job||{}),...(state.job||{})}}, 'extract_job');
   renderJob();
   setRecommendWorkflowStatus(`已识别当前岗位：${state.job.title||'-'} / ${state.job.city||'-'} / ${state.job.salary||'-'}`);
@@ -1111,6 +1155,327 @@ async function saveSourcingMatchWorkflow(){
   setRecommendWorkflowStatus(saved?'匹配记录已保存':'匹配记录保存失败');
   renderSourcingStatus();
 }
+
+
+function readJobStandardFromForm(){
+  let scoring_weights={};
+  const rawWeights=($('standard-scoring-weights')?.value||'').trim();
+  if(rawWeights){ try{ scoring_weights=JSON.parse(rawWeights); }catch{ scoring_weights={parse_error:rawWeights}; } }
+  return {
+    must_have_keywords:listFromInput('standard-must-have'),
+    nice_to_have_keywords:listFromInput('standard-nice-have'),
+    reject_keywords:listFromInput('standard-reject'),
+    target_city:($('standard-target-city')?.value||'').trim(),
+    min_experience:Number($('standard-min-experience')?.value||0)||0,
+    max_salary:($('standard-max-salary')?.value||'').trim(),
+    required_education:($('standard-required-education')?.value||'').trim(),
+    required_companies:listFromInput('standard-required-companies'),
+    preferred_companies:listFromInput('standard-preferred-companies'),
+    preferred_project_types:listFromInput('standard-project-types'),
+    preferred_styles:listFromInput('standard-styles'),
+    scoring_weights,
+  };
+}
+
+function populateJobStandardForm(standard=state.jobStandard||{}){
+  setValue('standard-must-have',(standard.must_have_keywords||[]).join('，'));
+  setValue('standard-nice-have',(standard.nice_to_have_keywords||[]).join('，'));
+  setValue('standard-reject',(standard.reject_keywords||[]).join('，'));
+  setValue('standard-target-city',standard.target_city||'');
+  setValue('standard-min-experience',standard.min_experience||'');
+  setValue('standard-max-salary',standard.max_salary||'');
+  setValue('standard-required-education',standard.required_education||'');
+  setValue('standard-required-companies',(standard.required_companies||[]).join('，'));
+  setValue('standard-preferred-companies',(standard.preferred_companies||[]).join('，'));
+  setValue('standard-project-types',(standard.preferred_project_types||[]).join('，'));
+  setValue('standard-styles',(standard.preferred_styles||[]).join('，'));
+  setValue('standard-scoring-weights',standard.scoring_weights && Object.keys(standard.scoring_weights).length ? JSON.stringify(standard.scoring_weights) : '');
+}
+
+async function loadJobStandard(){
+  const key=jobStandardKey();
+  let stored=null;
+  try{ stored=JSON.parse(localStorage.getItem(key)||'null'); }catch{}
+  if(!stored){
+    try{ const data=await chrome.storage.local.get([key]); stored=data[key]||null; }catch{}
+  }
+  state.jobStandard=stored;
+  populateJobStandardForm(stored||{});
+  renderSemiAutoWorkflow();
+  return stored;
+}
+
+async function saveJobStandard(){
+  if(!state.job?.title){ feedback('请先识别当前岗位再配置岗位标准','warn'); return; }
+  const standard=readJobStandardFromForm();
+  state.jobStandard=standard;
+  const key=jobStandardKey();
+  try{ localStorage.setItem(key, JSON.stringify(standard)); await chrome.storage.local.set({[key]:standard}); }catch(e){ console.warn('save job standard failed', e); }
+  await saveJobProfile().catch(()=>{});
+  await track('job_standard_saved',{job_title:state.job.title,source_module:'recommend_module',job_standard:standard}).catch(()=>{});
+  setSemiStatus('岗位标准已保存到本地岗位库');
+}
+
+function readAutoSafetyFromForm(){
+  return {
+    auto_enabled:Boolean($('semi-auto-enabled')?.checked),
+    match_threshold:Number($('semi-match-threshold')?.value||80)||80,
+    daily_send_limit:Number($('semi-daily-limit')?.value||20)||20,
+    min_delay_seconds:Number($('semi-min-delay')?.value||30)||30,
+    max_delay_seconds:Number($('semi-max-delay')?.value||90)||90,
+  };
+}
+
+function populateAutoSafetyForm(){
+  const c=state.autoSafety;
+  if($('semi-auto-enabled')) $('semi-auto-enabled').checked=Boolean(c.auto_enabled);
+  setValue('semi-match-threshold',c.match_threshold);
+  setValue('semi-daily-limit',c.daily_send_limit);
+  setValue('semi-min-delay',c.min_delay_seconds);
+  setValue('semi-max-delay',c.max_delay_seconds);
+}
+
+function saveAutoSafety(){
+  const next=readAutoSafetyFromForm();
+  if(next.auto_enabled && state.greetingMode==='auto'){
+    const ok=confirm('Auto 模式会在满足阈值/限额/去重后自动填入并点击发送。确认启用高风险自动发送？');
+    if(!ok){ next.auto_enabled=false; if($('semi-auto-enabled')) $('semi-auto-enabled').checked=false; }
+  }
+  state.autoSafety=next;
+  localStorage.setItem('recommend_auto_safety', JSON.stringify(next));
+  setSemiStatus(next.auto_enabled?'Auto 已显式启用（仍受阈值/限额/STOP 约束）':'Auto 未启用');
+}
+
+function loadAutoSafety(){
+  try{ state.autoSafety={...state.autoSafety,...(JSON.parse(localStorage.getItem('recommend_auto_safety')||'{}')||{})}; }catch{}
+  populateAutoSafetyForm();
+}
+
+function renderSemiAutoWorkflow(){
+  const rw=currentRecommendWorkflowState();
+  const job=rw.current_job||state.job||{};
+  const item=currentQueueItem();
+  const counts=queueStatusCounts();
+  const standard=state.jobStandard;
+  const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
+  set('semi-job-title', job?.title ? `${job.title}${job.city?` / ${job.city}`:''}${job.salary?` / ${job.salary}`:''}` : '-');
+  set('semi-standard-status', standard ? '已配置' : '未配置');
+  set('semi-scanned-count', (rw.scanned_candidates||[]).length);
+  set('semi-queue-count', `${state.recommendQueue.length}（pending ${counts.pending||0} / analyzed ${counts.analyzed||0} / sent ${counts.sent||0}）`);
+  set('semi-current-candidate', item?.candidate_card?.name || state.candidate?.name || '-');
+  set('semi-match-score', item?.match_score ?? state.priorityResult?.score ?? '-');
+  set('semi-recommended-action', item?.recommended_action || state.priorityResult?.recommended_action || '-');
+  set('semi-current-mode', state.greetingMode || 'manual');
+  set('semi-auto-status', state.autoSafety.auto_enabled ? `已启用；今日自动发送 ${autoSentToday()}/${state.autoSafety.daily_send_limit}` : '未启用');
+  const box=$('semi-queue-list');
+  if(box){
+    box.innerHTML=state.recommendQueue.length ? state.recommendQueue.slice(0,10).map((q,i)=>`<div class="reply-box"><b>${i+1}. ${htmlEscape(q.candidate_card?.name||'-')}</b> / ${htmlEscape(q.status)} / 分数 ${htmlEscape(q.match_score??'-')} / ${htmlEscape(q.recommended_action||'-')}<br>${htmlEscape(q.reason||'')}</div>`).join('') : '暂无队列';
+  }
+}
+
+function addRecommendQueue(){
+  const candidates=currentRecommendWorkflowState().scanned_candidates||state.scannedCandidates||[];
+  if(!candidates.length){ feedback('请先扫描推荐列表','warn'); return; }
+  const existing=new Set(state.recommendQueue.map((item)=>candidateQueueKey(item.candidate_card)));
+  let added=0;
+  for(const c of candidates){
+    const key=candidateQueueKey(c);
+    if(!c?.name || existing.has(key)) continue;
+    state.recommendQueue.push({candidate_card:c,status:'pending',match_score:null,match_level:'',greeting_message:'',recommended_action:'',reason:'等待手动打开详情后分析',created_at:new Date().toISOString()});
+    existing.add(key); added+=1;
+  }
+  state.currentQueueIndex=state.recommendQueue.findIndex((item)=>item.status==='pending');
+  if(state.currentQueueIndex<0) state.currentQueueIndex=0;
+  setSemiStatus(`已加入推荐队列：新增 ${added}，总数 ${state.recommendQueue.length}`);
+}
+
+function updateCurrentQueueItem(patch){
+  const item=currentQueueItem();
+  if(!item) return null;
+  Object.assign(item, patch, {updated_at:new Date().toISOString()});
+  return item;
+}
+
+async function analyzeSemiAutoCurrent(){
+  const item=currentQueueItem();
+  if(!item){ feedback('队列为空，请先加入推荐队列','warn'); return null; }
+  await extractRecommendResumeWorkflow();
+  if(!state.candidate?.name || state.candidate.profile_complete!==true){
+    updateCurrentQueueItem({status:'opened',reason:'请先在 BOSS 页面手动点击该候选人姓名打开详情'});
+    setSemiStatus('未检测到完整详情：请手动打开当前候选人详情后再点分析');
+    return null;
+  }
+  if(!state.job?.title) await extractRecommendJobWorkflow();
+  await analyzeCandidate();
+  if(!state.priorityResult?.score && state.priorityResult?.score!==0) return null;
+  const action=normalizeRecommendedAction(state.priorityResult.recommended_action || state.priorityResult.message_intent);
+  updateCurrentQueueItem({status:'analyzed',candidate_detail:state.candidate,match_score:state.priorityResult.score,match_level:state.priorityResult.level||'',recommended_action:action,reason:(state.priorityResult.matched_points||state.priorityResult.reasons||[]).join('；')});
+  await logSemiAutoAction('analyzed',{match_result:state.priorityResult});
+  setSemiStatus(`分析完成：${state.candidate.name} / ${state.priorityResult.score} / ${action}`);
+  return state.priorityResult;
+}
+
+function buildLocalGreetingMessage(){
+  const action=normalizeRecommendedAction(state.priorityResult?.recommended_action || state.priorityResult?.message_intent);
+  if(action==='reject' || action==='skip') return '';
+  const name=state.candidate?.name || '';
+  const jobTitle=state.job?.title || '当前岗位';
+  const point=(state.priorityResult?.matched_points||state.candidate?.skills||state.jobStandard?.nice_to_have_keywords||[]).find(Boolean) || state.candidate?.expected_position || '相关项目经验';
+  const prefix=name ? `${name}您好` : '您好';
+  const tone=action==='observe' ? '想低压力了解一下近期机会是否合适' : '想和您简单聊一下近期机会是否合适';
+  return `${prefix}，看了您的经历，您在${point}方向的经验和我们${jobTitle}比较相关，${tone}。`;
+}
+
+function sanitizeGreetingMessage(message){
+  return String(message||'').replace(/候选人/g,'您').replace(/匹配分|评分|打分|算法|模型/g,'').replace(/\s+/g,' ').trim().slice(0,180);
+}
+
+async function generateSemiAutoGreeting(){
+  if(!state.priorityResult?.score && state.priorityResult?.score!==0){ await analyzeSemiAutoCurrent(); }
+  const action=normalizeRecommendedAction(state.priorityResult?.recommended_action || state.priorityResult?.message_intent);
+  if(action==='reject' || action==='skip'){
+    updateCurrentQueueItem({status:'skipped',recommended_action:action,greeting_message:'',reason:'推荐动作不适合主动打招呼'});
+    setSemiStatus('推荐动作不适合主动联系，未生成打招呼话术');
+    return '';
+  }
+  await generateMessages();
+  let msg=sanitizeGreetingMessage(state.messageVariants?.[0]?.message || buildLocalGreetingMessage());
+  if(!msg) msg=sanitizeGreetingMessage(buildLocalGreetingMessage());
+  if(state.messageVariants?.[0]) state.messageVariants[0].message=msg;
+  updateCurrentQueueItem({status:'message_generated',greeting_message:msg,recommended_action:action,reason:'话术已生成，等待人工确认'});
+  renderMessages();
+  await logSemiAutoAction('message_generated',{generated_message:msg});
+  setSemiStatus(`话术已生成：${msg}`);
+  return msg;
+}
+
+async function fillSemiAutoGreeting(){
+  const item=currentQueueItem();
+  const msg=item?.greeting_message || state.messageVariants?.[0]?.message;
+  if(!msg){ feedback('请先生成话术','warn'); return false; }
+  if(state.greetingMode==='manual'){
+    feedback('manual 模式不会自动填入，请复制后手动处理','warn');
+    return false;
+  }
+  if(state.greetingMode==='assist' && !confirm('assist 模式将只把话术填入输入框，不会发送。确认填入？')) return false;
+  const res=await sendToSourcingFrame({type:'FILL_GREETING',text:msg});
+  if(res?.ok){
+    updateCurrentQueueItem({status:'filled',greeting_message:msg,reason:'已填入，等待用户手动发送'});
+    await logSemiAutoAction('filled',{generated_message:msg,operator_mode:state.greetingMode});
+    setSemiStatus('已填入输入框；请在 BOSS 页面人工确认发送');
+    return true;
+  }
+  updateCurrentQueueItem({status:'failed',reason:res?.error||'填入失败'});
+  setSemiStatus(res?.error||'填入失败');
+  return false;
+}
+
+function autoSafetyCheck(item=currentQueueItem()){
+  const name=item?.candidate_detail?.name || item?.candidate_card?.name || state.candidate?.name || '';
+  const greeted=getGreetedSet();
+  if(state.greetingMode!=='auto') return '当前不是 auto 模式';
+  if(!state.autoSafety.auto_enabled) return 'auto 未显式启用';
+  if(!item?.greeting_message) return '尚未生成话术';
+  if((item.match_score??state.priorityResult?.score??0) < state.autoSafety.match_threshold) return '匹配分低于阈值';
+  if(autoSentToday() >= state.autoSafety.daily_send_limit) return '今日自动发送已达上限';
+  if(greeted.has(name)) return '该候选人今日已打招呼，禁止重复发送';
+  if(state.candidate?.profile_complete!==true) return '简历未完整识别';
+  if(state.recommendStopAll) return 'STOP ALL 已触发';
+  return '';
+}
+
+async function sendSemiAutoGreeting({auto=false}={}){
+  const item=currentQueueItem();
+  if(!item){ feedback('队列为空','warn'); return false; }
+  if(state.greetingMode==='manual'){
+    const confirmed=confirm('manual 模式不会自动填入或发送。请确认您已在 BOSS 页面手动发送，是否记录为已发送？');
+    if(confirmed){
+      const greeted=getGreetedSet();
+      const name=item?.candidate_detail?.name || item?.candidate_card?.name || state.candidate?.name || '';
+      greeted.add(name); saveGreetedSet(greeted);
+      updateCurrentQueueItem({status:'sent',reason:'manual 人工确认已发送',greeted_at:new Date().toISOString()});
+      await logSemiAutoAction('sent',{generated_message:item.greeting_message||'',operator_mode:'manual',greeted_at:new Date().toISOString()});
+      setSemiStatus('manual 模式：已记录人工发送');
+    }else{
+      updateCurrentQueueItem({status:'message_generated',reason:'manual 模式仅生成话术，未记录发送'});
+      setSemiStatus('manual 模式：未自动填入或发送');
+    }
+    return false;
+  }
+  if(state.greetingMode==='assist'){
+    if(item.status!=='filled'){
+      await fillSemiAutoGreeting();
+      setSemiStatus('assist 模式：已填入但不会自动发送，请人工点击发送后再确认发送');
+      return false;
+    }
+    if(confirm('assist 模式不会自动点击发送。请确认您已在 BOSS 页面手动发送，是否记录为已发送？')){
+      const greeted=getGreetedSet();
+      const name=item?.candidate_detail?.name || item?.candidate_card?.name || state.candidate?.name || '';
+      greeted.add(name); saveGreetedSet(greeted);
+      updateCurrentQueueItem({status:'sent',reason:'assist 人工确认已发送',greeted_at:new Date().toISOString()});
+      await logSemiAutoAction('sent',{generated_message:item.greeting_message||'',operator_mode:'assist',greeted_at:new Date().toISOString()});
+      setSemiStatus('assist 模式：已记录人工发送');
+    }
+    return false;
+  }
+  const risk=autoSafetyCheck(item);
+  if(risk){ setSemiStatus(`auto 安全拦截：${risk}`); return false; }
+  if(!auto && !confirm('二次确认：将自动填入并点击发送。确认继续？')) return false;
+  const delay=randomDelayMs();
+  setSemiStatus(`auto 安全检查通过，将在 ${Math.round(delay/1000)} 秒后发送；可点击 STOP ALL`);
+  await sleep(delay);
+  if(state.recommendStopAll){ setSemiStatus('STOP ALL 已触发，已取消发送'); return false; }
+  const filled=await sendToSourcingFrame({type:'FILL_GREETING',text:item.greeting_message});
+  if(!filled?.ok){ updateCurrentQueueItem({status:'failed',reason:filled?.error||'自动填入失败'}); return false; }
+  const sent=await sendToSourcingFrame({type:'SEND_GREETING'});
+  if(sent?.ok){
+    const greeted=getGreetedSet();
+    const name=item?.candidate_detail?.name || item?.candidate_card?.name || state.candidate?.name || '';
+    greeted.add(name); saveGreetedSet(greeted); bumpAutoSentToday();
+    updateCurrentQueueItem({status:'sent',reason:'auto 已发送',greeted_at:new Date().toISOString()});
+    await logSemiAutoAction('sent',{generated_message:item.greeting_message,operator_mode:'auto',greeted_at:new Date().toISOString()});
+    setSemiStatus('auto 已发送并记录');
+    return true;
+  }
+  updateCurrentQueueItem({status:'failed',reason:sent?.error||'自动发送失败'});
+  setSemiStatus(sent?.error||'自动发送失败');
+  return false;
+}
+
+async function logSemiAutoAction(action_status, extra={}){
+  const item=currentQueueItem()||{};
+  const payload={
+    candidate:state.candidate||item.candidate_detail||item.candidate_card||{},
+    job:state.job||currentRecommendWorkflowState().current_job||{},
+    job_standard:state.jobStandard||{},
+    match_result:state.priorityResult||{},
+    generated_message:item.greeting_message||state.messageVariants?.[0]?.message||'',
+    action_status,
+    greeted_at:extra.greeted_at||'',
+    source_module:'recommend_module',
+    source_url:currentRecommendWorkflowState().best_frame_url||state.pageContext?.url||'',
+    operator_mode:state.greetingMode||'manual',
+    ...extra,
+  };
+  try{ await track('recommend_greeting_workflow', payload); }catch(e){ console.warn('log semi auto failed', e); }
+  try{ if(state.candidate?.name) await saveCandidateAsset({silent:true}); if(state.priorityResult) await saveMatchAsset({silent:true}); }catch(e){ console.warn('save semi auto assets failed', e); }
+}
+
+async function startSemiAutoProcessing(){
+  if(!state.recommendQueue.length) addRecommendQueue();
+  if(!state.recommendQueue.length) return;
+  state.recommendQueueRunning=true; state.recommendQueuePaused=false; state.recommendStopAll=false;
+  setSemiStatus('半自动处理已开始：V1 请手动打开当前候选人详情后点击“分析当前候选人”');
+  if(state.greetingMode==='auto'){
+    const ok=confirm('二次确认：auto 会在满足安全规则后自动发送。确认以 auto 模式开始？');
+    if(!ok){ state.greetingMode='manual'; const r=document.querySelector("input[name='greet_mode'][value='manual']"); if(r) r.checked=true; }
+  }
+  renderSemiAutoWorkflow();
+}
+function pauseSemiAuto(){ state.recommendQueuePaused=true; state.recommendQueueRunning=false; setSemiStatus('已暂停'); }
+function resumeSemiAuto(){ state.recommendQueuePaused=false; state.recommendQueueRunning=true; setSemiStatus('已继续，请手动打开候选人详情后处理'); }
+function stopSemiAuto(){ state.recommendStopAll=true; state.recommendQueueRunning=false; state.recommendQueuePaused=false; logSemiAutoAction('stop_all').catch(()=>{}); setSemiStatus('STOP ALL 已触发：禁止后续自动发送'); }
+function skipSemiAutoCurrent(){ updateCurrentQueueItem({status:'skipped',reason:'用户跳过'}); logSemiAutoAction('skipped').catch(()=>{}); const next=state.recommendQueue.findIndex((item)=>item.status==='pending'); state.currentQueueIndex=next>=0?next:state.currentQueueIndex+1; setSemiStatus('已跳过当前候选人'); }
 
 async function scanCandidateList(){
   feedback('正在扫描当前页候选人...');
@@ -1328,9 +1693,28 @@ async function refreshTodayStats(){
 }
 
 async function loadSettings(){
-  try{ state.settings=await api('/api/settings'); $('current-mode').textContent=state.settings.mode; const r=document.querySelector(`input[name='greet_mode'][value='${state.settings.mode}']`); if(r) r.checked=true; }catch(e){ feedback(e.message); }
+  try{
+    state.settings=await api('/api/settings');
+    state.greetingMode=state.settings.greeting_mode || state.settings.mode || 'manual';
+  }catch(e){
+    state.greetingMode='manual';
+    feedback(e.message);
+  }
+  $('current-mode').textContent=state.greetingMode;
+  const r=document.querySelector(`input[name='greet_mode'][value='${state.greetingMode}']`); if(r) r.checked=true;
+  loadAutoSafety();
+  await loadJobStandard();
+  renderSemiAutoWorkflow();
 }
-async function saveMode(){ const mode=document.querySelector("input[name='greet_mode']:checked").value; state.settings=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,min_score:60})}); $('current-mode').textContent=state.settings.mode; feedback('模式已保存'); }
+async function saveMode(){
+  const mode=document.querySelector("input[name='greet_mode']:checked")?.value || 'manual';
+  if(mode==='auto' && !confirm('Auto 是高风险模式：仅在显式启用、达到阈值、未超限、未重复、STOP 可用时自动发送。确认切换？')) return;
+  state.settings=await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,greeting_mode:mode,min_score:60,auto_safety:state.autoSafety})});
+  state.greetingMode=mode;
+  $('current-mode').textContent=mode;
+  renderSemiAutoWorkflow();
+  feedback('模式已保存');
+}
 async function queueAction(path){ await api(path,{method:'POST'}); const st=await api('/api/queue/status'); $('queue-count').textContent=st.queue_count; feedback('队列状态已更新'); }
 async function queueAdd(){ if(!state.priorityResult){ feedback('请先分析候选人'); return; } const r=await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,context_id:state.contextId})}); $('queue-count').textContent=r.queue_count; feedback('已加入队列'); }
 
@@ -1383,6 +1767,18 @@ function bind(){
   $('queue-pause-btn').onclick=()=>queueAction('/api/queue/pause');
   $('queue-clear-btn').onclick=()=>queueAction('/api/queue/clear');
   $('queue-stop-all-btn').onclick=()=>queueAction('/api/queue/stop');
+  const semiSaveStandardBtn=$('semi-save-standard-btn'); if(semiSaveStandardBtn) semiSaveStandardBtn.onclick=saveJobStandard;
+  const semiSaveSafetyBtn=$('semi-save-safety-btn'); if(semiSaveSafetyBtn) semiSaveSafetyBtn.onclick=saveAutoSafety;
+  const semiAddQueueBtn=$('semi-add-queue-btn'); if(semiAddQueueBtn) semiAddQueueBtn.onclick=addRecommendQueue;
+  const semiStartBtn=$('semi-start-btn'); if(semiStartBtn) semiStartBtn.onclick=startSemiAutoProcessing;
+  const semiPauseBtn=$('semi-pause-btn'); if(semiPauseBtn) semiPauseBtn.onclick=pauseSemiAuto;
+  const semiResumeBtn=$('semi-resume-btn'); if(semiResumeBtn) semiResumeBtn.onclick=resumeSemiAuto;
+  const semiSkipBtn=$('semi-skip-btn'); if(semiSkipBtn) semiSkipBtn.onclick=skipSemiAutoCurrent;
+  const semiAnalyzeBtn=$('semi-analyze-btn'); if(semiAnalyzeBtn) semiAnalyzeBtn.onclick=analyzeSemiAutoCurrent;
+  const semiGenerateBtn=$('semi-generate-btn'); if(semiGenerateBtn) semiGenerateBtn.onclick=generateSemiAutoGreeting;
+  const semiFillBtn=$('semi-fill-btn'); if(semiFillBtn) semiFillBtn.onclick=fillSemiAutoGreeting;
+  const semiConfirmSendBtn=$('semi-confirm-send-btn'); if(semiConfirmSendBtn) semiConfirmSendBtn.onclick=()=>sendSemiAutoGreeting({auto:false});
+  const semiStopBtn=$('semi-stop-btn'); if(semiStopBtn) semiStopBtn.onclick=stopSemiAuto;
   const matchesBox=$('job-profile-matches'); if(matchesBox) matchesBox.onclick=async(e)=>{ const b=e.target.closest('button[data-use-job-match]'); if(!b)return; const item=state.jobProfileMatches[Number(b.dataset.useJobMatch)]; if(!item?.profile)return; applyJobProfile(item.profile,'已使用相似岗位配置','profile_store_match'); await saveCurrentJobContext(state.job); feedback(`已使用相似岗位配置：${state.job.title}`); };
   $('message-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.copy||b.dataset.fill); const v=state.messageVariants[i]; if(!v)return; if(b.dataset.copy!==undefined){ await navigator.clipboard.writeText(v.message); feedback('已复制'); } if(b.dataset.fill!==undefined) await fillMessage(v.message,v.strategy); };
   $('followup-list').onclick=async(e)=>{ const b=e.target.closest('button'); if(!b)return; const i=Number(b.dataset.followCopy||b.dataset.followFill||b.dataset.followHandled); const item=state.followups[i]; if(!item)return; if(b.dataset.followCopy!==undefined){ await navigator.clipboard.writeText(item.suggested_message); feedback('已复制'); } if(b.dataset.followFill!==undefined) await fillMessage(item.suggested_message,'followup'); if(b.dataset.followHandled!==undefined){ await track('followup_handled',{candidate_name:item.candidate_name,job_title:item.job_title||''}); b.textContent='已处理'; b.disabled=true; feedback('跟进已处理'); }};
