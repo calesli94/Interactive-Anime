@@ -214,7 +214,7 @@ function analyzeBossFrameMapStandalone(){
   const flat=one(raw);
   const href=location.href.toLowerCase();
   let detected_module_hint='unknown_module';
-  if(/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(flat)) detected_module_hint='recommend_module';
+  if(/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(flat) || /打招呼/.test(flat) && /期望/.test(flat)) detected_module_hint='recommend_module';
   else if(/深度搜索/.test(flat)) detected_module_hint='deep_search_module';
   else if(/\/web\/chat\/index(?:[/?#]|$)/.test(href)) detected_module_hint='chat_module';
   else if(/牛人管理/.test(flat)) detected_module_hint='talent_manage_module';
@@ -305,7 +305,7 @@ function diagnoseBossFrameStandalone(){
   const body=raw.slice(0,12000);
   const href=location.href.toLowerCase();
   let module_type='unknown_module';
-  if(/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body)) module_type='recommend_module';
+  if(/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body) || /打招呼/.test(body) && /期望/.test(body)) module_type='recommend_module';
   else if(/深度搜索/.test(body)) module_type='deep_search_module';
   else if(/\/web\/chat\/index(?:[/?#]|$)/.test(href)) module_type='chat_module';
   else if(/牛人管理/.test(body)) module_type='talent_manage_module';

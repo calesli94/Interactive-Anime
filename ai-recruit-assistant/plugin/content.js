@@ -1333,7 +1333,7 @@
   function detectBossModule() {
     const href = location.href.toLowerCase();
     const body = textOf(document.body).slice(0, 12000);
-    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body)) return "recommend_module";
+    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body) || /打招呼/.test(body) && /期望/.test(body)) return "recommend_module";
     if (/深度搜索/.test(body)) return "deep_search_module";
     if (/\/web\/chat\/index(?:[/?#]|$)/.test(href)) return "chat_module";
     if (/牛人管理/.test(body)) return "talent_manage_module";
@@ -1444,7 +1444,7 @@
   function detectCandidateListPageType() {
     const href = location.href.toLowerCase();
     const body = textOf(document.body).slice(0, 12000);
-    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href)) return "recommend_page";
+    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href) || /打招呼/.test(body) && /期望/.test(body)) return "recommend_page";
     if (/\/web\/(chat|geek|boss)\/search(?:[/?#]|$)/.test(href)) return "search_page";
     if (/深度搜索|搜索结果/.test(body)) return "search_page";
     if (/推荐牛人/.test(body)) return "recommend_page";
@@ -1848,6 +1848,35 @@
 
 
 
+
+  function isRecommendBusinessFrame() {
+    const href = location.href.toLowerCase();
+    const bodyText = cleanText(document.body?.innerText || document.body?.textContent || "");
+    return /\/web\/frame\/recommend(?:[/?#]|$)/.test(href)
+      || Boolean(document.querySelector(".candidate-recommend, .candidate-body, .recommend-wrap"))
+      || bodyText.includes("candidate-recommend")
+      || (/打招呼/.test(bodyText) && /期望/.test(bodyText));
+  }
+
+  function recommendBusinessContainer() {
+    return document.querySelector(".candidate-body")
+      || document.querySelector(".candidate-recommend")
+      || document.querySelector(".recommend-wrap")
+      || document.querySelector(".container-wrap")
+      || document.querySelector("#container")
+      || document.body;
+  }
+
+  function textOfRecommendBusinessContainer() {
+    const container = recommendBusinessContainer();
+    return cleanText(container?.innerText || container?.textContent || "");
+  }
+
+  function recommendContainerDebug() {
+    const container = recommendBusinessContainer();
+    return container ? { selector: container.id ? `#${container.id}` : (container.className ? `.${String(container.className).trim().split(/\s+/).join(".")}` : container.tagName.toLowerCase()), rect: rectInfo(container), text_preview: oneLine(textOf(container)).slice(0, 300) } : null;
+  }
+
   const RECOMMEND_CANDIDATE_START_RE = /([\u4e00-\u9fa5]{2,6})\s+(刚刚活跃|今日活跃|本周活跃|3日内活跃)/g;
   const RECOMMEND_SALARY_RE = /\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议/;
 
@@ -2106,22 +2135,26 @@
 
 
   const RECOMMEND_JOB_SELECTOR_RE = /([\u4e00-\u9fa5A-Za-z0-9·/（）()_-]{2,30})\s*[_｜|]?\s*(北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京|厦门|长沙|西安)\s*[_｜|]?\s*(\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/g;
-  const RECOMMEND_BAD_JOB_TITLES = ["推荐", "最新", "筛选", "全部", "面试", "沟通"];
+  const RECOMMEND_BAD_JOB_TITLES = ["推荐", "精选", "最新", "筛选", "全部", "面试", "沟通", "上海", "重庆"];
 
   function normalizeRecommendSalary(value) {
     return oneLine(value).replace(/\s+/g, "").replace(/[~—至]/g, "-").replace(/k/g, "K");
   }
 
   function validRecommendJobTitle(title) {
-    const value = oneLine(title).replace(/推荐牛人|切换职位|全部职位|岗位|职位|招聘中|急招|请选择/g, "").replace(/^[_｜|\s]+|[_｜|\s]+$/g, "");
+    const value = oneLine(title)
+      .replace(/推荐牛人|切换职位|全部职位|岗位|职位|招聘中|急招|请选择/g, "")
+      .replace(/^(推荐|精选|最新|筛选|全部|面试|沟通)+/, "")
+      .replace(/^[_｜|\s]+|[_｜|\s]+$/g, "");
     if (!value || RECOMMEND_BAD_JOB_TITLES.includes(value)) return "";
     if (RECOMMEND_BAD_JOB_TITLES.some((word) => value === word || value.endsWith(word))) return "";
-    if (/推荐|最新|筛选|全部|面试|沟通/.test(value) && value.length <= 4) return "";
+    if (/^(北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京|厦门|长沙|西安)$/.test(value)) return "";
+    if (/推荐|精选|最新|筛选|全部|面试|沟通/.test(value) && value.length <= 6) return "";
     return validateJobTitle(value) ? value : "";
   }
 
   function recommendTextForBestFrame() {
-    return cleanText(document.body?.innerText || document.body?.textContent || "");
+    return textOfRecommendBusinessContainer();
   }
 
   function recommendJobParseCandidatesFromFrame() {
@@ -2160,34 +2193,99 @@
     const candidates = recommendJobParseCandidatesFromFrame();
     const selected = candidates[0] || null;
     const job = {
-      ...emptyJob("recommend_best_frame_job_selector"),
+      ...emptyJob("recommend_frame_job_selector"),
       title: selected?.title || "",
       city: selected?.city || "",
       salary: selected?.salary || "",
       raw_text: selected?.raw_text || "",
-      source: "recommend_best_frame_job_selector",
+      source: "recommend_frame_job_selector",
       jd_complete: false,
       warning: selected ? "已从最佳业务 Frame 识别推荐页岗位，未使用缓存岗位" : "未在最佳业务 Frame 识别岗位选择器",
     };
     return { ok: Boolean(job.title), module_type: "recommend_module", job, title: job.title, city: job.city, salary: job.salary, source: job.source, error: job.title ? "" : "未识别当前岗位选择器", debug: { job_parse_candidates: candidates, selected_job: selected } };
   }
 
+
+  const RECOMMEND_SALARY_NAME_START_RE = /(\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)\s*\n?\s*([\u4e00-\u9fa5]{2,6})\s*\n?\s*(刚刚活跃|今日活跃|本周活跃|3日内活跃)?/g;
+
+  function splitRecommendSalaryNameSegments(text) {
+    const raw = cleanText(text || "");
+    const matches = Array.from(raw.matchAll(RECOMMEND_SALARY_NAME_START_RE));
+    const segments = [];
+    for (let i = 0; i < matches.length; i += 1) {
+      const start = matches[i].index || 0;
+      const end = i + 1 < matches.length ? matches[i + 1].index : raw.length;
+      const segment = raw.slice(start, end).trim();
+      if (segment) segments.push({ salary: normalizeRecommendSalary(matches[i][1] || ""), name: matches[i][2] || "", active_status: matches[i][3] || "", raw_text: segment });
+    }
+    return segments;
+  }
+
+  function expectedPartsFromRecommendSegment(raw) {
+    const line = linesOf(raw).find((item) => /期望|最近关注/.test(item)) || "";
+    const city = (line.match(CITY_RE) || [""])[0];
+    let expected_position = "";
+    if (city) {
+      expected_position = oneLine(line.slice(line.indexOf(city) + city.length)).replace(/^[:：|｜\s]+/, "").split(/\s{2,}|\||｜|,|，/).find((item) => item && !RECOMMEND_SALARY_RE.test(item) && !/行业|到岗|在职/.test(item)) || "";
+    }
+    if (!expected_position) expected_position = expectedParts(raw).expected_position || "";
+    return { city, expected_position };
+  }
+
+  function extractRecommendSkillsFromSegment(raw) {
+    const lines = linesOf(raw);
+    const advantageIndex = lines.findIndex((line) => /优势/.test(line));
+    const workIndex = lines.findIndex((line) => /工作经历|\d{4}[.-]|\d{4}\s*年/.test(line));
+    const skillSource = lines.slice(advantageIndex >= 0 ? advantageIndex : 0, workIndex > 0 ? workIndex : Math.min(lines.length, 12)).join(" ");
+    const shortTags = skillSource.split(/[\s,，|｜/]+/).map(oneLine).filter((item) => item.length >= 2 && item.length <= 16 && !/优势|岁|年|本科|大专|硕士|博士|期望|最近关注|打招呼/.test(item));
+    return uniq([...safeKeywords(skillSource, SKILL_WORDS), ...shortTags]).slice(0, 16);
+  }
+
+  function extractCompaniesFromRecommendSegment(raw) {
+    const lines = linesOf(raw);
+    return uniq(lines.filter((line) => /(\d{4}[.-]|\d{4}\s*年|至今|公司|有限|科技|网络|传媒|集团)/.test(line) && COMPANY_NAME_RE.test(line)).map((line) => oneLine(line).slice(0, 80))).slice(0, 8);
+  }
+
+  function recommendCandidateFromSalaryNameSegment(segment) {
+    const raw = cleanText(segment.raw_text || "");
+    const exp = parseExperience(raw);
+    const expected = expectedPartsFromRecommendSegment(raw);
+    return {
+      name: segment.name || "",
+      age: parseAge(raw),
+      experience_years: exp.experience_years,
+      experience_years_text: exp.experience_years_text || "",
+      education: parseEducation(raw),
+      city: expected.city || (raw.match(CITY_RE) || [""])[0],
+      expected_position: expected.expected_position || "",
+      salary_expectation: segment.salary || (raw.match(RECOMMEND_SALARY_RE) || [""])[0],
+      skills: extractRecommendSkillsFromSegment(raw),
+      companies: extractCompaniesFromRecommendSegment(raw),
+      schools: extractSchoolsFromCard(raw),
+      highlights: extractHighlightsFromCard(raw).length ? extractHighlightsFromCard(raw) : linesOf(raw).filter((line) => /优势|负责|经验|熟悉|项目/.test(line)).slice(0, 8),
+      raw_text: raw.slice(0, 5000),
+      source: "recommend_best_frame_card",
+      source_url: location.href,
+      profile_complete: false,
+    };
+  }
+
   function scanRecommendListFromBestFrame() {
-    const segments = splitRecommendCandidateSegments(recommendTextForBestFrame());
+    const container = recommendBusinessContainer();
+    const rawText = cleanText(container?.innerText || container?.textContent || "");
+    const segments = splitRecommendSalaryNameSegments(rawText);
     const candidates = [];
     const previews = [];
     for (const segment of segments) {
       const raw = segment.raw_text;
-      const acceptable = /\d{2}\s*岁/.test(raw) && /本科|大专|硕士|博士/.test(raw) && /10\s*年以上|\d+\s*年/.test(raw) && (/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(raw) || /期望/.test(raw));
-      previews.push({ name: segment.name, accepted: acceptable, text_preview: oneLine(raw).slice(0, 240) });
+      const acceptable = /\d{2}\s*岁/.test(raw) && /本科|大专|硕士|博士/.test(raw) && /10\s*年以上|\d+\s*年|25\s*年应届生/.test(raw) && (/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(segment.salary || raw) || /期望/.test(raw));
+      previews.push({ name: segment.name, salary: segment.salary, accepted: acceptable, text_preview: oneLine(raw).slice(0, 240) });
       if (!acceptable) continue;
-      const candidate = recommendTextCandidateFromSegment(segment, "recommend_best_frame_card");
-      candidate.source = "recommend_best_frame_card";
-      candidate.profile_complete = false;
-      candidates.push(candidate);
+      const candidate = recommendCandidateFromSalaryNameSegment(segment);
+      if (candidate.name) candidates.push(candidate);
       if (candidates.length >= 60) break;
     }
-    return { ok: true, module_type: "recommend_module", page_type: "recommend_page", candidates, count: candidates.length, debug: { strategy: "best_frame_body_text_segmentation", candidate_segments_count: segments.length, candidate_accepted_count: candidates.length, candidate_previews: previews.slice(0, 20) } };
+    return { ok: true, module_type: "recommend_module", page_type: "recommend_page", candidates, count: candidates.length, debug: { strategy: "candidate_body_salary_name_segmentation", container: recommendContainerDebug(), candidate_segments_count: segments.length, candidate_accepted_count: candidates.length, candidate_previews: previews.slice(0, 20) } };
   }
 
   function extractRecommendResumeModalFromBestFrame() {
