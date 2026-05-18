@@ -1333,7 +1333,7 @@
   function detectBossModule() {
     const href = location.href.toLowerCase();
     const body = textOf(document.body).slice(0, 12000);
-    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body)) return "recommend_module";
+    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href) || /推荐牛人/.test(body)) return "recommend_module";
     if (/深度搜索/.test(body)) return "deep_search_module";
     if (/\/web\/chat\/index(?:[/?#]|$)/.test(href)) return "chat_module";
     if (/牛人管理/.test(body)) return "talent_manage_module";
@@ -1444,7 +1444,7 @@
   function detectCandidateListPageType() {
     const href = location.href.toLowerCase();
     const body = textOf(document.body).slice(0, 12000);
-    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href)) return "recommend_page";
+    if (/\/web\/(chat|geek)\/recommend(?:[/?#]|$)/.test(href) || /\/web\/frame\/recommend(?:[/?#]|$)/.test(href)) return "recommend_page";
     if (/\/web\/(chat|geek|boss)\/search(?:[/?#]|$)/.test(href)) return "search_page";
     if (/深度搜索|搜索结果/.test(body)) return "search_page";
     if (/推荐牛人/.test(body)) return "recommend_page";
@@ -2104,8 +2104,129 @@
       .sort((a, b) => b.score - a.score || a.rect.top - b.rect.top || a.text.length - b.text.length);
   }
 
+
+  const RECOMMEND_JOB_SELECTOR_RE = /([\u4e00-\u9fa5A-Za-z0-9·/（）()_-]{2,30})\s*[_｜|]?\s*(北京|上海|广州|深圳|重庆|杭州|成都|武汉|苏州|南京|厦门|长沙|西安)\s*[_｜|]?\s*(\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议)/g;
+  const RECOMMEND_BAD_JOB_TITLES = ["推荐", "最新", "筛选", "全部", "面试", "沟通"];
+
+  function normalizeRecommendSalary(value) {
+    return oneLine(value).replace(/\s+/g, "").replace(/[~—至]/g, "-").replace(/k/g, "K");
+  }
+
+  function validRecommendJobTitle(title) {
+    const value = oneLine(title).replace(/推荐牛人|切换职位|全部职位|岗位|职位|招聘中|急招|请选择/g, "").replace(/^[_｜|\s]+|[_｜|\s]+$/g, "");
+    if (!value || RECOMMEND_BAD_JOB_TITLES.includes(value)) return "";
+    if (RECOMMEND_BAD_JOB_TITLES.some((word) => value === word || value.endsWith(word))) return "";
+    if (/推荐|最新|筛选|全部|面试|沟通/.test(value) && value.length <= 4) return "";
+    return validateJobTitle(value) ? value : "";
+  }
+
+  function recommendTextForBestFrame() {
+    return cleanText(document.body?.innerText || document.body?.textContent || "");
+  }
+
+  function recommendJobParseCandidatesFromFrame() {
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (rawText, rect = null, source = "text") => {
+      const text = oneLine(rawText);
+      if (!text) return;
+      RECOMMEND_JOB_SELECTOR_RE.lastIndex = 0;
+      let match;
+      while ((match = RECOMMEND_JOB_SELECTOR_RE.exec(text))) {
+        const title = validRecommendJobTitle(match[1]);
+        if (!title) continue;
+        const city = match[2] || "";
+        const salary = normalizeRecommendSalary(match[3] || "");
+        const key = `${title}|${city}|${salary}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ title, city, salary, raw_text: oneLine(match[0]), source, top: rect ? Math.round(rect.top) : 9999, left: rect ? Math.round(rect.left) : 9999 });
+      }
+    };
+    for (const node of Array.from(document.querySelectorAll("button, [role='button'], [class*='select'], [class*='dropdown'], [class*='job'], [class*='position'], span, div")).slice(0, 3000)) {
+      if (!(node instanceof Element) || isExtensionDom(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.top > 360 || rect.width < 20) continue;
+      const text = oneLine(node.innerText || node.textContent || "");
+      if (text.length < 5 || text.length > 220) continue;
+      if (!/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]|面议/.test(text)) continue;
+      addCandidate(text, rect, "dropdown_like_dom");
+    }
+    addCandidate(recommendTextForBestFrame().slice(0, 2500), null, "best_frame_text_top");
+    return candidates.sort((a, b) => (a.source === "dropdown_like_dom" ? -1 : 1) - (b.source === "dropdown_like_dom" ? -1 : 1) || a.top - b.top || a.raw_text.length - b.raw_text.length);
+  }
+
+  function extractRecommendJobFromBestFrame() {
+    const candidates = recommendJobParseCandidatesFromFrame();
+    const selected = candidates[0] || null;
+    const job = {
+      ...emptyJob("recommend_best_frame_job_selector"),
+      title: selected?.title || "",
+      city: selected?.city || "",
+      salary: selected?.salary || "",
+      raw_text: selected?.raw_text || "",
+      source: "recommend_best_frame_job_selector",
+      jd_complete: false,
+      warning: selected ? "已从最佳业务 Frame 识别推荐页岗位，未使用缓存岗位" : "未在最佳业务 Frame 识别岗位选择器",
+    };
+    return { ok: Boolean(job.title), module_type: "recommend_module", job, title: job.title, city: job.city, salary: job.salary, source: job.source, error: job.title ? "" : "未识别当前岗位选择器", debug: { job_parse_candidates: candidates, selected_job: selected } };
+  }
+
+  function scanRecommendListFromBestFrame() {
+    const segments = splitRecommendCandidateSegments(recommendTextForBestFrame());
+    const candidates = [];
+    const previews = [];
+    for (const segment of segments) {
+      const raw = segment.raw_text;
+      const acceptable = /\d{2}\s*岁/.test(raw) && /本科|大专|硕士|博士/.test(raw) && /10\s*年以上|\d+\s*年/.test(raw) && (/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(raw) || /期望/.test(raw));
+      previews.push({ name: segment.name, accepted: acceptable, text_preview: oneLine(raw).slice(0, 240) });
+      if (!acceptable) continue;
+      const candidate = recommendTextCandidateFromSegment(segment, "recommend_best_frame_card");
+      candidate.source = "recommend_best_frame_card";
+      candidate.profile_complete = false;
+      candidates.push(candidate);
+      if (candidates.length >= 60) break;
+    }
+    return { ok: true, module_type: "recommend_module", page_type: "recommend_page", candidates, count: candidates.length, debug: { strategy: "best_frame_body_text_segmentation", candidate_segments_count: segments.length, candidate_accepted_count: candidates.length, candidate_previews: previews.slice(0, 20) } };
+  }
+
+  function extractRecommendResumeModalFromBestFrame() {
+    const raw = recommendTextForBestFrame();
+    const headers = Array.from(raw.matchAll(/([\u4e00-\u9fa5]{2,6})\s*(?:刚刚活跃|今日活跃|本周活跃|3日内活跃)?\s*\d{2}\s*岁/g));
+    const candidates = [];
+    for (let i = 0; i < headers.length; i += 1) {
+      const start = headers[i].index || 0;
+      const end = i + 1 < headers.length ? headers[i + 1].index : raw.length;
+      const segment = raw.slice(start, end).trim();
+      const hasResume = /工作经历/.test(segment) && /期望职位/.test(segment) && /教育经历/.test(segment);
+      if (!hasResume) continue;
+      candidates.push({ name: headers[i][1], raw_text: segment, start, text_preview: oneLine(segment).slice(0, 500) });
+    }
+    const selected = candidates.sort((a, b) => b.raw_text.length - a.raw_text.length)[0] || null;
+    if (!selected) return { ok: false, modal_found: false, candidate: emptyCandidate("recommend_best_frame_resume_modal"), error: "最佳业务 Frame 未检测到已打开的简历弹窗", debug: { modal_found: false, header_count: headers.length, modal_candidate_preview: null } };
+    const parsed = recommendTextCandidateFromSegment({ name: selected.name, raw_text: selected.raw_text }, "recommend_best_frame_resume_modal");
+    const candidate = { ...parsed, name: selected.name || parsed.name || "", source: "recommend_best_frame_resume_modal", profile_complete: true };
+    return { ok: Boolean(candidate.name), modal_found: true, module_type: "recommend_module", candidate, debug: { modal_found: true, header_count: headers.length, modal_candidate_preview: { name: candidate.name, text_preview: selected.text_preview } } };
+  }
+
+  function recommendExtractionDebugFromBestFrame() {
+    const job = extractRecommendJobFromBestFrame();
+    const list = scanRecommendListFromBestFrame();
+    const modal = extractRecommendResumeModalFromBestFrame();
+    return {
+      job_parse_candidates: job.debug?.job_parse_candidates || [],
+      selected_job: job.job || null,
+      candidate_segments_count: list.debug?.candidate_segments_count || 0,
+      candidate_accepted_count: list.candidates?.length || 0,
+      candidate_previews: list.debug?.candidate_previews || [],
+      modal_found: Boolean(modal.modal_found),
+      modal_candidate_preview: modal.debug?.modal_candidate_preview || null,
+    };
+  }
+
   function extractRecommendJob() {
     try {
+      if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase())) return extractRecommendJobFromBestFrame();
       if (detectPageType() !== "recommend_page") return { ok: false, job: emptyJob("recommend_job_dropdown"), error: "当前页面不是推荐牛人页" };
       const candidates = recommendJobDropdownCandidates();
       const domParsed = candidates[0]?.parsed || { title: "", city: "", salary: "", source: "recommend_job_dropdown", raw_text: "" };
@@ -2141,6 +2262,7 @@
 
   function scanRecommendList() {
     try {
+      if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase())) return scanRecommendListFromBestFrame();
       if (detectPageType() !== "recommend_page") return { ok: false, page_type: detectPageType(), candidates: [], error: "当前页面不是推荐牛人页" };
       const scan = scanRecommendCandidateCards();
       let candidates = (scan.accepted || []).map((item) => {
@@ -2176,6 +2298,7 @@
 
   function extractRecommendResumeModal() {
     try {
+      if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase())) return extractRecommendResumeModalFromBestFrame();
       if (detectPageType() !== "recommend_page" && !isSourcingFrameContext()) return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "当前页面不是推荐牛人页或搜索页" };
       const item = resumeModalCandidates()[0] || recommendModalLikeCandidates()[0];
       if (!item) {
@@ -2222,6 +2345,7 @@
   function extractSourcingJob() {
     try {
       const moduleType = detectBossModule();
+      if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase()) || moduleType === "recommend_module") return extractRecommendJobFromBestFrame();
       if (!isSourcingFrameContext(moduleType)) return { ok: false, job: emptyJob("sourcing_job_selector"), error: "当前模块不是推荐/搜索/深度搜索" };
       const candidates = recommendJobDropdownCandidates();
       const domParsed = candidates[0]?.parsed || { title: "", city: "", salary: "", source: "sourcing_job_selector", raw_text: "" };
@@ -2260,6 +2384,7 @@
   function scanSourcingList() {
     try {
       const moduleType = detectBossModule();
+      if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase()) || moduleType === "recommend_module") return scanRecommendListFromBestFrame();
       if (!isSourcingFrameContext(moduleType)) return { ok: false, module_type: moduleType, candidates: [], error: "当前模块不是推荐/搜索/深度搜索" };
       const scan = scanRecommendCandidateCards();
       let candidates = (scan.accepted || []).map((item) => {
@@ -2296,12 +2421,13 @@
   function extractSourcingResumeModal() {
     try {
       const moduleType = detectBossModule();
+      if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase()) || moduleType === "recommend_module") { const result = extractRecommendResumeModalFromBestFrame(); return { ...result, module_type: "recommend_module" }; }
       if (!isSourcingFrameContext(moduleType)) return { ok: false, candidate: emptyCandidate("sourcing_resume_modal"), error: "当前模块不是推荐/搜索/深度搜索" };
       const result = extractRecommendResumeModal();
       if (!result.ok) return { ...result, module_type: moduleType };
       const candidate = {
         ...(result.candidate || {}),
-        source: "sourcing_resume_modal",
+        source: result.candidate?.source || "sourcing_resume_modal",
         profile_complete: true,
         source_url: location.href,
       };
@@ -2480,6 +2606,8 @@
           module_router_debug: { module_type: detectBossModule(), page_type: pageType, url: location.href },
           frame_diagnostics: frameDiagnostics(),
           frame_mapping_debug: analyzeCurrentFrame(),
+          frame_selection_debug: { overall_module_type: detectBossModule(), best_frame_id: null, best_frame_url: location.href, best_frame_roles: analyzeCurrentFrame().frame_roles, reason: "current_frame_debug" },
+          recommend_extraction_debug: recommendExtractionDebugFromBestFrame(),
           recommend_dom_recon: recommendDomRecon(),
           sourcing_job_debug: extractSourcingJob(),
           sourcing_list_scan_debug: scanSourcingList(),
@@ -2503,6 +2631,8 @@
         module_router_debug: { module_type: detectBossModule(), page_type: detectPageType(), url: location.href },
         frame_diagnostics: frameDiagnostics(),
         frame_mapping_debug: analyzeCurrentFrame(),
+        frame_selection_debug: { overall_module_type: detectBossModule(), best_frame_id: null, best_frame_url: location.href, best_frame_roles: analyzeCurrentFrame().frame_roles, reason: "current_frame_debug" },
+        recommend_extraction_debug: isSourcingFrameContext() ? recommendExtractionDebugFromBestFrame() : null,
         sourcing_job_debug: isSourcingFrameContext() ? extractSourcingJob() : null,
         sourcing_list_scan_debug: isSourcingFrameContext() ? scanSourcingList() : null,
         sourcing_resume_modal_debug: isSourcingFrameContext() ? extractSourcingResumeModal() : null,

@@ -260,10 +260,11 @@ function scoreFrameRole(frame,role){
 function renderBossFrameMap(){
   const map=state.bossFrameMap||{frames:[]};
   const frames=map.frames||[];
-  const bestCandidate=[...frames].sort((a,b)=>scoreFrameRole(b,'candidate_list_frame')-scoreFrameRole(a,'candidate_list_frame'))[0];
+  const selection=selectBestBossFrame(frames);
+  const bestCandidate=selection.frame || [...frames].sort((a,b)=>scoreFrameRole(b,'candidate_list_frame')-scoreFrameRole(a,'candidate_list_frame'))[0];
   const bestResume=[...frames].sort((a,b)=>scoreFrameRole(b,'resume_modal_frame')-scoreFrameRole(a,'resume_modal_frame'))[0];
   const set=(id,value)=>{ const el=$(id); if(el) el.textContent=value; };
-  set('best-candidate-frame', scoreFrameRole(bestCandidate,'candidate_list_frame')>=0 ? `Frame ${bestCandidate.frame_id}` : '-');
+  set('best-candidate-frame', bestCandidate ? `Frame ${bestCandidate.frame_id} / ${selection.reason||''}` : '-');
   set('best-resume-frame', scoreFrameRole(bestResume,'resume_modal_frame')>=0 ? `Frame ${bestResume.frame_id}` : '-');
   const box=$('boss-frame-map-list');
   if(!box) return;
@@ -285,7 +286,11 @@ async function analyzeBossFrameMap(){
   const exec=await executeAllFrames(tab.id, analyzeBossFrameMapStandalone);
   if(!exec.ok){ feedback(exec.error||'Frame Map 分析失败','warn'); return; }
   const frames=(exec.results||[]).map((item)=>({...(item.result||{}),frame_id:item.frameId})).filter((frame)=>frame.frame_url);
-  state.bossFrameMap={top_url:tab.url||'',frames};
+  const selection=selectBestBossFrame(frames);
+  state.bossFrameMap={top_url:tab.url||'',frames,frame_selection_debug:selection};
+  state.sourcingDiagnostics=state.bossFrameMap;
+  state.sourcingFrameId=selection.best_frame_id;
+  state.sourcingModule=overallModuleTypeFromFrames(frames);
   renderBossFrameMap();
   const nav=frames.some((f)=>(f.frame_roles||[]).includes('navigation_frame'));
   const list=frames.some((f)=>(f.frame_roles||[]).includes('candidate_list_frame'));
@@ -336,12 +341,38 @@ async function executeAllFrames(tabId, func){
   });
 }
 
-function chooseSourcingFrame(frames=[]){
-  const scored=frames.map((frame)=>{
-    const score=(frame.has_candidate_like_text?1000:0)+(frame.candidate_like_count||0)*100+(frame.body_text_length||0)/100+(frame.has_job_like_text?50:0);
-    return {...frame,__score:score};
+function selectBestBossFrame(frameResults=[]){
+  const scored=(frameResults||[]).map((frame)=>{
+    const roles=frame.frame_roles||[frame.frame_role].filter(Boolean);
+    const text=`${frame.body_preview||''} ${frame.body_text_preview||''}`;
+    const reasons=[];
+    let score=0;
+    if(/\/web\/frame\/recommend(?:[/?#]|$)/.test(frame.frame_url||'')){ score+=10000; reasons.push('URL=/web/frame/recommend'); }
+    if(roles.includes('candidate_list_frame')){ score+=5000; reasons.push('role=candidate_list_frame'); }
+    if((frame.body_text_length||0)>1000){ score+=1000; reasons.push('body_text_length>1000'); }
+    if(/\d{2}岁/.test(text) && /本科|大专|硕士|博士/.test(text) && /10年以上|\d+年/.test(text) && /打招呼/.test(text)){ score+=800; reasons.push('candidate-like text'); }
+    if(/\d{1,2}\s*[-~—至]\s*\d{1,2}\s*[kK]/.test(text)){ score+=300; reasons.push('selected job salary'); }
+    if(roles.includes('resume_modal_frame')){ score+=150; reasons.push('role=resume_modal_frame'); }
+    return {...frame,__score:score,__reason:reasons.join('；')||'no strong business-frame signal'};
   }).sort((a,b)=>b.__score-a.__score);
-  return scored[0]||null;
+  const best=scored[0]||null;
+  return {
+    best_frame_id: best?.frame_id ?? null,
+    best_frame_url: best?.frame_url || '',
+    frame_roles: best?.frame_roles || [best?.frame_role].filter(Boolean),
+    reason: best?.__reason || '',
+    frame: best,
+  };
+}
+
+function overallModuleTypeFromFrames(frames=[]){
+  const best=selectBestBossFrame(frames);
+  if(/\/web\/frame\/recommend(?:[/?#]|$)/.test(best.best_frame_url||'') || (best.frame_roles||[]).includes('candidate_list_frame')) return 'recommend_module';
+  return best.frame?.detected_module_hint || best.frame?.module_type || state.sourcingModule || 'unknown_module';
+}
+
+function chooseSourcingFrame(frames=[]){
+  return selectBestBossFrame(frames).frame || null;
 }
 
 async function diagnoseBossPage(){
@@ -351,15 +382,17 @@ async function diagnoseBossPage(){
   if(!tab?.id) return {ok:false,error:'未找到当前活动标签页'};
   const injected=await injectContentScript(tab.id,{allFrames:true});
   if(!injected.ok) console.warn(injected.error);
-  const exec=await executeAllFrames(tab.id, diagnoseBossFrameStandalone);
+  const exec=await executeAllFrames(tab.id, analyzeBossFrameMapStandalone);
   if(!exec.ok) return exec;
   const frames=(exec.results||[]).map((item)=>({...(item.result||{}),frame_id:item.frameId})).filter((item)=>item.frame_url);
   const chosen=chooseSourcingFrame(frames);
-  state.sourcingDiagnostics={top_url:tab.url||'',frames};
-  state.sourcingFrameId=chosen?.frame_id ?? null;
-  state.sourcingModule=chosen?.module_type||'';
+  const selection=selectBestBossFrame(frames);
+  state.sourcingDiagnostics={top_url:tab.url||'',frames,frame_selection_debug:selection};
+  state.bossFrameMap={top_url:tab.url||'',frames,frame_selection_debug:selection};
+  state.sourcingFrameId=selection.best_frame_id ?? chosen?.frame_id ?? null;
+  state.sourcingModule=overallModuleTypeFromFrames(frames);
   renderSourcingStatus();
-  return {ok:true,top_url:tab.url||'',frames};
+  return {ok:true,top_url:tab.url||'',frames,frame_selection_debug:selection};
 }
 
 async function sendToSourcingFrame(message){
@@ -394,6 +427,8 @@ function renderSourcingStatus(){
   set('sourcing-job-profile-status', state.job?.title ? (hasJobDetail() ? '已加载岗位库/JD' : '当前岗位缺少完整JD，请先保存岗位要求或从岗位库选择。') : '-');
   set('sourcing-scan-count', (state.scannedCandidates||[]).length);
   set('sourcing-resume-candidate', state.candidate?.name || '-');
+  const best=state.sourcingDiagnostics?.frame_selection_debug || state.bossFrameMap?.frame_selection_debug;
+  set('sourcing-best-frame', best?.best_frame_id!==null && best?.best_frame_id!==undefined ? `Frame ${best.best_frame_id} / ${(best.frame_roles||[]).join('/')}` : '-');
   const match=state.priorityResult ? `${state.priorityResult.score??'-'} / ${state.priorityResult.level||'-'} / ${state.priorityResult.recommended_action||state.priorityResult.recommendation||'-'}` : '-';
   set('sourcing-match-result', match);
 }
@@ -593,6 +628,27 @@ async function saveJobProfile(){
 async function refreshContext(){
   feedback('正在刷新页面上下文...');
   try{
+    const diag=await diagnoseBossPage();
+    if(diag?.ok && overallModuleTypeFromFrames(diag.frames||[])==='recommend_module'){
+      state.sourcingModule='recommend_module';
+      const jobRes=await sendToSourcingFrame({type:'EXTRACT_SOURCING_JOB'});
+      const listRes=await sendToSourcingFrame({type:'SCAN_SOURCING_LIST'});
+      const modalRes=await sendToSourcingFrame({type:'EXTRACT_SOURCING_RESUME_MODAL'});
+      state.pageContext={ok:true,page_type:'recommend_page',module_type:'recommend_module',url:diag.top_url||'',title:'',job:jobRes?.job||{},candidate:modalRes?.modal_found?modalRes.candidate:{},chat:{candidate_name:'',messages_text:'',latest_messages:[],source:'recommend_module'},context_id:`recommend_${Date.now()}`,warnings:[]};
+      state.job=jobRes?.job||{};
+      state.scannedPageType='recommend_page';
+      state.scannedCandidates=listRes?.candidates||[];
+      if(modalRes?.modal_found && modalRes?.candidate?.name) state.candidate=modalRes.candidate;
+      else state.candidate={};
+      state.chat=state.pageContext.chat;
+      state.contextId=state.pageContext.context_id;
+      if(state.job?.title) await loadJobProfileByTitle(state.job.title,{silent:true,city:state.job.city});
+      renderContext();
+      renderScannedCandidates();
+      setRecommendWorkflowStatus(`推荐页上下文已刷新：${state.job?.title||'-'} / 候选 ${state.scannedCandidates.length}`);
+      feedback('推荐页上下文已刷新（使用最佳业务 Frame，未调用聊天抓取）');
+      return;
+    }
     const ctx=await sendToContent({type:'EXTRACT_PAGE_CONTEXT'});
     if(!ctx?.ok){ feedback(ctx?.error || '无法读取当前页面上下文，请刷新页面或确认插件已注入','warn'); return; }
     state.pageContext=ctx;
@@ -1181,8 +1237,16 @@ async function queueAction(path){ await api(path,{method:'POST'}); const st=awai
 async function queueAdd(){ if(!state.priorityResult){ feedback('请先分析候选人'); return; } const r=await api('/api/queue/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidate:state.candidate,context_id:state.contextId})}); $('queue-count').textContent=r.queue_count; feedback('已加入队列'); }
 
 async function debugDom(){
-  const res=await sendToContent({type:'DEBUG_DOM'});
-  $('debug-dom-output').textContent=JSON.stringify(res,null,2).slice(0,3000);
+  let res=await sendToContent({type:'DEBUG_DOM'});
+  try{
+    const diag=await diagnoseBossPage();
+    if(diag?.ok && overallModuleTypeFromFrames(diag.frames||[])==='recommend_module'){
+      const bestDebug=await sendToSourcingFrame({type:'DEBUG_DOM'});
+      const selection=diag.frame_selection_debug || selectBestBossFrame(diag.frames||[]);
+      res={...(bestDebug?.ok?bestDebug:res),top_frame_debug:res,frame_selection_debug:{overall_module_type:'recommend_module',best_frame_id:selection.best_frame_id,best_frame_url:selection.best_frame_url,best_frame_roles:selection.frame_roles,reason:selection.reason}};
+    }
+  }catch(e){ console.warn('recommend DEBUG_DOM frame merge failed', e); }
+  $('debug-dom-output').textContent=JSON.stringify(res,null,2).slice(0,5000);
   feedback(res?.ok?'DOM 调试信息已输出':(res?.error||'DOM 调试失败'));
 }
 
