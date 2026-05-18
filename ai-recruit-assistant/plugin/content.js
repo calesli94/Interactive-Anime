@@ -2709,21 +2709,6 @@
     }
   }
 
-  function sendGreeting() {
-    try {
-      const buttons = queryVisible(["button", "[role='button']", "a"])
-        .map((node) => ({ node, text: oneLine(node.innerText || node.textContent || ""), rect: node.getBoundingClientRect() }))
-        .filter((item) => /^(发送|打招呼|立即沟通)$/.test(item.text) || /发送|打招呼|立即沟通/.test(item.text))
-        .sort((a, b) => b.rect.y - a.rect.y || a.text.length - b.text.length);
-      const target = buttons[0]?.node;
-      if (!target) return { ok: false, error: "未找到发送/打招呼按钮", debug: { button_count: buttons.length } };
-      target.click();
-      return { ok: true, clicked_text: buttons[0].text, rect: rectInfo(target) };
-    } catch (e) {
-      return { ok: false, error: `发送按钮点击异常：${e.message || e}` };
-    }
-  }
-
   function visibleBlocks() {
     const blocks = [];
     for (const node of queryVisible(["main", "section", "article", "aside", "div", "li", "p"])) {
@@ -2849,7 +2834,6 @@
       else if (message?.type === "EXTRACT_RECOMMEND_RESUME_MODAL") sendResponse(extractRecommendResumeModal());
       else if (message?.type === "EXTRACT_CHAT") sendResponse(extractChat());
       else if (message?.type === "FILL_GREETING") sendResponse(fillGreeting(message.text || ""));
-      else if (message?.type === "SEND_GREETING") sendResponse(sendGreeting());
       else sendResponse({ ok: false, error: `未知消息类型: ${message?.type || "empty"}`, debug: { url: location.href, title: document.title } });
     } catch (e) {
       sendResponse({ ok: false, error: `content.js handler 异常：${e.message || e}`, debug: { type: message?.type || "", url: location.href, title: document.title, stack: e.stack || "" } });

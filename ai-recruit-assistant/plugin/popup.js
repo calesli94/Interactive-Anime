@@ -102,8 +102,26 @@ function getGreetedSet(){ try{return new Set(JSON.parse(localStorage.getItem(gre
 function saveGreetedSet(set){ localStorage.setItem(greetedKey(), JSON.stringify([...set])); }
 function autoSentToday(){ return Number(localStorage.getItem(autoCountKey())||0); }
 function bumpAutoSentToday(){ const next=autoSentToday()+1; localStorage.setItem(autoCountKey(), String(next)); return next; }
-function candidateQueueKey(candidate){ return `${candidate?.name||''}|${candidate?.salary_expectation||''}|${candidate?.age||''}`; }
-function currentQueueItem(){ return state.recommendQueue[state.currentQueueIndex] || state.recommendQueue.find((item)=>!['sent','skipped','failed'].includes(item.status)) || null; }
+const RECOMMEND_QUEUE_STORAGE_KEY='ai_recruit_recommend_queue_state';
+function jobKeyFromJob(job=state.job||{}){ return `${job?.title||''}|${job?.city||''}|${job?.salary||''}`; }
+function candidateQueueKey(candidate){ return `${candidate?.name||''}|${candidate?.age||''}|${candidate?.expected_position||candidate?.current_title||''}|${candidate?.salary_expectation||''}`; }
+function queueCandidateFromItem(item){ return item?.candidate_card || item?.candidate_detail || item || {}; }
+function getCurrentQueueItem(){
+  if(!state.recommendQueue.length) return null;
+  if(state.currentQueueIndex>=0 && state.currentQueueIndex<state.recommendQueue.length) return state.recommendQueue[state.currentQueueIndex];
+  const next=state.recommendQueue.findIndex((item)=>item.status==='pending' || item.status==='opened');
+  state.currentQueueIndex=next>=0?next:0;
+  return state.recommendQueue[state.currentQueueIndex]||null;
+}
+function currentQueueItem(){ return getCurrentQueueItem(); }
+function advanceToNextPending(){
+  const start=Math.max(0,state.currentQueueIndex+1);
+  let next=state.recommendQueue.findIndex((item,i)=>i>=start && item.status==='pending');
+  if(next<0) next=state.recommendQueue.findIndex((item)=>item.status==='pending');
+  if(next>=0) state.currentQueueIndex=next;
+  return getCurrentQueueItem();
+}
+function markCurrentStatus(status, patch={}){ return updateCurrentQueueItem({status,...patch}); }
 function queueStatusCounts(){ return state.recommendQueue.reduce((acc,item)=>{ acc[item.status]=(acc[item.status]||0)+1; return acc; },{}); }
 function normalizeRecommendedAction(action=''){
   const raw=String(action||'').toLowerCase();
@@ -118,6 +136,105 @@ function randomDelayMs(){
   return Math.round((min + Math.random()*(max-min))*1000);
 }
 function setSemiStatus(text){ const el=$('semi-workflow-status'); if(el) el.textContent=text||'-'; renderSemiAutoWorkflow(); }
+
+function serializeRecommendQueueItem(item){
+  const c=queueCandidateFromItem(item);
+  return {
+    candidate_key:item.candidate_key || candidateQueueKey(c),
+    name:c.name||item.name||'',
+    age:c.age??item.age??null,
+    expected_position:c.expected_position||item.expected_position||'',
+    salary_expectation:c.salary_expectation||item.salary_expectation||'',
+    raw_text:c.raw_text||item.raw_text||'',
+    status:item.status||'pending',
+    match_score:item.match_score??null,
+    match_level:item.match_level||'',
+    recommended_action:item.recommended_action||'',
+    greeting_message:item.greeting_message||'',
+    error:item.error||'',
+    reason:item.reason||'',
+    updated_at:item.updated_at||item.created_at||new Date().toISOString(),
+  };
+}
+function hydrateRecommendQueueItem(item){
+  const candidate={name:item.name||'',age:item.age??null,expected_position:item.expected_position||'',salary_expectation:item.salary_expectation||'',raw_text:item.raw_text||'',source:'recommend_frame_card',profile_complete:false};
+  return {candidate_key:item.candidate_key||candidateQueueKey(candidate),candidate_card:candidate,status:item.status||'pending',match_score:item.match_score??null,match_level:item.match_level||'',recommended_action:item.recommended_action||'',greeting_message:item.greeting_message||'',error:item.error||'',reason:item.reason||'',updated_at:item.updated_at||'',created_at:item.updated_at||new Date().toISOString()};
+}
+function buildRecommendQueueSnapshot(){
+  const job=currentRecommendWorkflowState().current_job||state.job||{};
+  const current=getCurrentQueueItem();
+  return {job_key:jobKeyFromJob(job),job_title:job.title||'',job_city:job.city||'',job_salary:job.salary||'',source_url:currentRecommendWorkflowState().best_frame_url||state.pageContext?.url||'',queue:(state.recommendQueue||[]).map(serializeRecommendQueueItem),current_index:state.currentQueueIndex,current_candidate_key:current?.candidate_key||candidateQueueKey(queueCandidateFromItem(current)),updated_at:new Date().toISOString()};
+}
+async function persistRecommendQueueState(){
+  const snapshot=buildRecommendQueueSnapshot();
+  try{ await chrome.storage.local.set({[RECOMMEND_QUEUE_STORAGE_KEY]:snapshot}); }catch(e){ try{ localStorage.setItem(RECOMMEND_QUEUE_STORAGE_KEY, JSON.stringify(snapshot)); }catch{} }
+  return snapshot;
+}
+async function readRecommendQueueSnapshot(){
+  try{ const data=await chrome.storage.local.get([RECOMMEND_QUEUE_STORAGE_KEY]); if(data?.[RECOMMEND_QUEUE_STORAGE_KEY]) return data[RECOMMEND_QUEUE_STORAGE_KEY]; }catch{}
+  try{ return JSON.parse(localStorage.getItem(RECOMMEND_QUEUE_STORAGE_KEY)||'null'); }catch{return null;}
+}
+function applyRecommendQueueSnapshot(snapshot){
+  state.recommendQueue=(snapshot.queue||[]).map(hydrateRecommendQueueItem);
+  state.currentQueueIndex=Math.min(Math.max(0, Number(snapshot.current_index||0)), Math.max(0,state.recommendQueue.length-1));
+  state.pendingRecommendQueueState=null;
+  renderSemiAutoWorkflow();
+  return snapshot;
+}
+async function restoreRecommendQueueState({force=false}={}){
+  const snapshot=await readRecommendQueueSnapshot();
+  if(!snapshot?.queue?.length){ renderSemiAutoWorkflow(); return null; }
+  const currentKey=jobKeyFromJob(currentRecommendWorkflowState().current_job||state.job||{});
+  if(force || !currentKey.replace(/\|/g,'') || snapshot.job_key===currentKey){
+    applyRecommendQueueSnapshot(snapshot);
+    setSemiStatus(`已恢复队列：${state.recommendQueue.length} 人，当前第 ${state.currentQueueIndex+1} 人`);
+    return snapshot;
+  }
+  state.pendingRecommendQueueState=snapshot;
+  setSemiStatus(`检测到岗位变化，是否加载上次队列？上次：${snapshot.job_title||'-'} / ${snapshot.job_city||'-'}`);
+  renderSemiAutoWorkflow();
+  return snapshot;
+}
+async function clearRecommendQueueState(){
+  state.recommendQueue=[]; state.currentQueueIndex=0; state.pendingRecommendQueueState=null;
+  try{ await chrome.storage.local.remove(RECOMMEND_QUEUE_STORAGE_KEY); }catch{}
+  try{ localStorage.removeItem(RECOMMEND_QUEUE_STORAGE_KEY); }catch{}
+  setSemiStatus('推荐队列已清空');
+}
+function findQueueIndexForCandidate(candidate){
+  const key=candidateQueueKey(candidate||{});
+  let idx=state.recommendQueue.findIndex((item)=>item.candidate_key===key || candidateQueueKey(queueCandidateFromItem(item))===key);
+  if(idx<0 && candidate?.name) idx=state.recommendQueue.findIndex((item)=>queueCandidateFromItem(item).name===candidate.name);
+  return idx;
+}
+async function jumpToOpenedCandidate(){
+  const c=currentRecommendWorkflowState().opened_candidate||state.candidate||{};
+  const idx=findQueueIndexForCandidate(c);
+  if(idx<0){ setSemiStatus('当前打开候选人不在队列中'); return null; }
+  state.currentQueueIndex=idx;
+  markCurrentStatus('opened',{candidate_detail:c,reason:'已匹配当前打开简历'});
+  await persistRecommendQueueState();
+  setSemiStatus(`已跳到当前打开候选人：${c.name||'-'}（第 ${idx+1} 人）`);
+  return getCurrentQueueItem();
+}
+async function jumpToNextPending(){
+  const next=advanceToNextPending();
+  await persistRecommendQueueState();
+  setSemiStatus(next?`已跳到下一个待处理：${queueCandidateFromItem(next).name||'-'}`:'没有待处理候选人');
+  return next;
+}
+
+async function continuePreviousQueue(){
+  const snapshot=state.pendingRecommendQueueState || await readRecommendQueueSnapshot();
+  if(!snapshot?.queue?.length){ setSemiStatus('没有可恢复的队列'); return; }
+  applyRecommendQueueSnapshot(snapshot);
+  await persistRecommendQueueState();
+  setSemiStatus(`已加载上次队列：${state.recommendQueue.length} 人，当前第 ${state.currentQueueIndex+1} 人`);
+}
+async function clearQueueUseCurrentJob(){
+  await clearRecommendQueueState();
+  setSemiStatus('已清空上次队列，请扫描并加入当前岗位候选人');
+}
 function htmlEscape(v){ return String(v??'').replace(/[&<>"']/g,(s)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
 function hasJobDetail(){ return Boolean(state.job?.jd_complete || state.job?.description || (state.job?.requirements||[]).length || (state.job?.responsibilities||[]).length); }
 function splitLines(value){
@@ -1126,6 +1243,14 @@ async function extractRecommendResumeWorkflow(){
   state.sourcingModule=res.module_type||state.sourcingModule;
   state.candidate=res.candidate||{};
   updateRecommendWorkflowState({opened_candidate:state.candidate,last_scan_debug:{resume_debug:res.debug||null}}, 'extract_resume');
+  if(state.recommendQueue.length){
+    const idx=findQueueIndexForCandidate(state.candidate);
+    if(idx>=0){
+      state.currentQueueIndex=idx;
+      markCurrentStatus('opened',{candidate_detail:state.candidate,reason:'已识别并匹配当前打开简历'});
+      await persistRecommendQueueState();
+    }
+  }
   state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'recommend_page',candidate:state.candidate};
   renderCandidate();
   setRecommendWorkflowStatus(`已识别当前简历：${state.candidate.name||'-'} / ${state.candidate.expected_position||state.candidate.current_title||'-'}`);
@@ -1147,11 +1272,13 @@ async function generateRecommendGreetingWorkflow(){
 async function saveRecommendCandidateWorkflow(){
   if(!state.candidate?.name) await extractRecommendResumeWorkflow();
   await saveCandidateAsset();
+  await persistRecommendQueueState();
   renderSourcingStatus();
 }
 
 async function saveSourcingMatchWorkflow(){
   const saved=await saveMatchAsset();
+  await persistRecommendQueueState();
   setRecommendWorkflowStatus(saved?'匹配记录已保存':'匹配记录保存失败');
   renderSourcingStatus();
 }
@@ -1262,14 +1389,14 @@ function renderSemiAutoWorkflow(){
   set('semi-standard-status', standard ? '已配置' : '未配置');
   set('semi-scanned-count', (rw.scanned_candidates||[]).length);
   set('semi-queue-count', `${state.recommendQueue.length}（pending ${counts.pending||0} / analyzed ${counts.analyzed||0} / sent ${counts.sent||0}）`);
-  set('semi-current-candidate', item?.candidate_card?.name || state.candidate?.name || '-');
+  set('semi-current-candidate', item ? `${state.currentQueueIndex+1}. ${queueCandidateFromItem(item).name||'-'}` : (state.candidate?.name || '-'));
   set('semi-match-score', item?.match_score ?? state.priorityResult?.score ?? '-');
   set('semi-recommended-action', item?.recommended_action || state.priorityResult?.recommended_action || '-');
   set('semi-current-mode', state.greetingMode || 'manual');
   set('semi-auto-status', state.autoSafety.auto_enabled ? `已启用；今日自动发送 ${autoSentToday()}/${state.autoSafety.daily_send_limit}` : '未启用');
   const box=$('semi-queue-list');
   if(box){
-    box.innerHTML=state.recommendQueue.length ? state.recommendQueue.slice(0,10).map((q,i)=>`<div class="reply-box"><b>${i+1}. ${htmlEscape(q.candidate_card?.name||'-')}</b> / ${htmlEscape(q.status)} / 分数 ${htmlEscape(q.match_score??'-')} / ${htmlEscape(q.recommended_action||'-')}<br>${htmlEscape(q.reason||'')}</div>`).join('') : '暂无队列';
+    box.innerHTML=state.recommendQueue.length ? state.recommendQueue.slice(0,20).map((q,i)=>{ const c=queueCandidateFromItem(q); const active=i===state.currentQueueIndex?' ▶':''; return `<div class="reply-box"><b>${i+1}. ${htmlEscape(c.name||'-')}${active}</b> / ${htmlEscape(q.status)} / 分数 ${htmlEscape(q.match_score??'-')} / ${htmlEscape(q.recommended_action||'-')}<br>${htmlEscape(q.reason||q.error||'')}</div>`; }).join('') : '暂无队列';
   }
 }
 
@@ -1281,18 +1408,22 @@ function addRecommendQueue(){
   for(const c of candidates){
     const key=candidateQueueKey(c);
     if(!c?.name || existing.has(key)) continue;
-    state.recommendQueue.push({candidate_card:c,status:'pending',match_score:null,match_level:'',greeting_message:'',recommended_action:'',reason:'等待手动打开详情后分析',created_at:new Date().toISOString()});
+    state.recommendQueue.push({candidate_key:key,candidate_card:c,status:'pending',match_score:null,match_level:'',greeting_message:'',recommended_action:'',reason:'等待手动打开详情后分析',created_at:new Date().toISOString(),updated_at:new Date().toISOString()});
     existing.add(key); added+=1;
   }
   state.currentQueueIndex=state.recommendQueue.findIndex((item)=>item.status==='pending');
   if(state.currentQueueIndex<0) state.currentQueueIndex=0;
+  persistRecommendQueueState().catch(()=>{});
   setSemiStatus(`已加入推荐队列：新增 ${added}，总数 ${state.recommendQueue.length}`);
 }
 
 function updateCurrentQueueItem(patch){
-  const item=currentQueueItem();
+  const item=getCurrentQueueItem();
   if(!item) return null;
   Object.assign(item, patch, {updated_at:new Date().toISOString()});
+  if(!item.candidate_key) item.candidate_key=candidateQueueKey(queueCandidateFromItem(item));
+  persistRecommendQueueState().catch(()=>{});
+  renderSemiAutoWorkflow();
   return item;
 }
 
@@ -1335,7 +1466,9 @@ async function generateSemiAutoGreeting(){
   const action=normalizeRecommendedAction(state.priorityResult?.recommended_action || state.priorityResult?.message_intent);
   if(action==='reject' || action==='skip'){
     updateCurrentQueueItem({status:'skipped',recommended_action:action,greeting_message:'',reason:'推荐动作不适合主动打招呼'});
-    setSemiStatus('推荐动作不适合主动联系，未生成打招呼话术');
+    advanceToNextPending();
+    await persistRecommendQueueState();
+    setSemiStatus('推荐动作不适合主动联系，已跳到下一个待处理');
     return '';
   }
   await generateMessages();
@@ -1395,7 +1528,9 @@ async function sendSemiAutoGreeting({auto=false}={}){
       greeted.add(name); saveGreetedSet(greeted);
       updateCurrentQueueItem({status:'sent',reason:'manual 人工确认已发送',greeted_at:new Date().toISOString()});
       await logSemiAutoAction('sent',{generated_message:item.greeting_message||'',operator_mode:'manual',greeted_at:new Date().toISOString()});
-      setSemiStatus('manual 模式：已记录人工发送');
+      advanceToNextPending();
+      await persistRecommendQueueState();
+      setSemiStatus('manual 模式：已记录人工发送，已跳到下一个待处理');
     }else{
       updateCurrentQueueItem({status:'message_generated',reason:'manual 模式仅生成话术，未记录发送'});
       setSemiStatus('manual 模式：未自动填入或发送');
@@ -1414,31 +1549,18 @@ async function sendSemiAutoGreeting({auto=false}={}){
       greeted.add(name); saveGreetedSet(greeted);
       updateCurrentQueueItem({status:'sent',reason:'assist 人工确认已发送',greeted_at:new Date().toISOString()});
       await logSemiAutoAction('sent',{generated_message:item.greeting_message||'',operator_mode:'assist',greeted_at:new Date().toISOString()});
-      setSemiStatus('assist 模式：已记录人工发送');
+      advanceToNextPending();
+      await persistRecommendQueueState();
+      setSemiStatus('assist 模式：已记录人工发送，已跳到下一个待处理');
     }
     return false;
   }
   const risk=autoSafetyCheck(item);
   if(risk){ setSemiStatus(`auto 安全拦截：${risk}`); return false; }
   if(!auto && !confirm('二次确认：将自动填入并点击发送。确认继续？')) return false;
-  const delay=randomDelayMs();
-  setSemiStatus(`auto 安全检查通过，将在 ${Math.round(delay/1000)} 秒后发送；可点击 STOP ALL`);
-  await sleep(delay);
-  if(state.recommendStopAll){ setSemiStatus('STOP ALL 已触发，已取消发送'); return false; }
-  const filled=await sendToSourcingFrame({type:'FILL_GREETING',text:item.greeting_message});
-  if(!filled?.ok){ updateCurrentQueueItem({status:'failed',reason:filled?.error||'自动填入失败'}); return false; }
-  const sent=await sendToSourcingFrame({type:'SEND_GREETING'});
-  if(sent?.ok){
-    const greeted=getGreetedSet();
-    const name=item?.candidate_detail?.name || item?.candidate_card?.name || state.candidate?.name || '';
-    greeted.add(name); saveGreetedSet(greeted); bumpAutoSentToday();
-    updateCurrentQueueItem({status:'sent',reason:'auto 已发送',greeted_at:new Date().toISOString()});
-    await logSemiAutoAction('sent',{generated_message:item.greeting_message,operator_mode:'auto',greeted_at:new Date().toISOString()});
-    setSemiStatus('auto 已发送并记录');
-    return true;
-  }
-  updateCurrentQueueItem({status:'failed',reason:sent?.error||'自动发送失败'});
-  setSemiStatus(sent?.error||'自动发送失败');
+  updateCurrentQueueItem({status:'message_generated',reason:'V1 禁止自动点击打招呼/发送，请改用 manual 或 assist 人工确认'});
+  await persistRecommendQueueState();
+  setSemiStatus('安全限制：V1 不执行自动发送，也不会自动点击打招呼；请人工确认发送');
   return false;
 }
 
@@ -1465,6 +1587,7 @@ async function startSemiAutoProcessing(){
   if(!state.recommendQueue.length) addRecommendQueue();
   if(!state.recommendQueue.length) return;
   state.recommendQueueRunning=true; state.recommendQueuePaused=false; state.recommendStopAll=false;
+  await persistRecommendQueueState();
   setSemiStatus('半自动处理已开始：V1 请手动打开当前候选人详情后点击“分析当前候选人”');
   if(state.greetingMode==='auto'){
     const ok=confirm('二次确认：auto 会在满足安全规则后自动发送。确认以 auto 模式开始？');
@@ -1472,10 +1595,10 @@ async function startSemiAutoProcessing(){
   }
   renderSemiAutoWorkflow();
 }
-function pauseSemiAuto(){ state.recommendQueuePaused=true; state.recommendQueueRunning=false; setSemiStatus('已暂停'); }
-function resumeSemiAuto(){ state.recommendQueuePaused=false; state.recommendQueueRunning=true; setSemiStatus('已继续，请手动打开候选人详情后处理'); }
-function stopSemiAuto(){ state.recommendStopAll=true; state.recommendQueueRunning=false; state.recommendQueuePaused=false; logSemiAutoAction('stop_all').catch(()=>{}); setSemiStatus('STOP ALL 已触发：禁止后续自动发送'); }
-function skipSemiAutoCurrent(){ updateCurrentQueueItem({status:'skipped',reason:'用户跳过'}); logSemiAutoAction('skipped').catch(()=>{}); const next=state.recommendQueue.findIndex((item)=>item.status==='pending'); state.currentQueueIndex=next>=0?next:state.currentQueueIndex+1; setSemiStatus('已跳过当前候选人'); }
+function pauseSemiAuto(){ state.recommendQueuePaused=true; state.recommendQueueRunning=false; persistRecommendQueueState().catch(()=>{}); setSemiStatus('已暂停'); }
+function resumeSemiAuto(){ state.recommendQueuePaused=false; state.recommendQueueRunning=true; persistRecommendQueueState().catch(()=>{}); setSemiStatus('已继续，请手动打开候选人详情后处理'); }
+function stopSemiAuto(){ state.recommendStopAll=true; state.recommendQueueRunning=false; state.recommendQueuePaused=false; logSemiAutoAction('stop_all').catch(()=>{}); persistRecommendQueueState().catch(()=>{}); setSemiStatus('STOP ALL 已触发：禁止后续自动发送'); }
+async function skipSemiAutoCurrent(){ markCurrentStatus('skipped',{reason:'用户跳过'}); await logSemiAutoAction('skipped').catch(()=>{}); advanceToNextPending(); await persistRecommendQueueState(); setSemiStatus('已跳过当前候选人'); }
 
 async function scanCandidateList(){
   feedback('正在扫描当前页候选人...');
@@ -1704,6 +1827,7 @@ async function loadSettings(){
   const r=document.querySelector(`input[name='greet_mode'][value='${state.greetingMode}']`); if(r) r.checked=true;
   loadAutoSafety();
   await loadJobStandard();
+  await restoreRecommendQueueState();
   renderSemiAutoWorkflow();
 }
 async function saveMode(){
@@ -1767,6 +1891,11 @@ function bind(){
   $('queue-pause-btn').onclick=()=>queueAction('/api/queue/pause');
   $('queue-clear-btn').onclick=()=>queueAction('/api/queue/clear');
   $('queue-stop-all-btn').onclick=()=>queueAction('/api/queue/stop');
+  const semiRestoreQueueBtn=$('semi-restore-queue-btn'); if(semiRestoreQueueBtn) semiRestoreQueueBtn.onclick=()=>restoreRecommendQueueState({force:true});
+  const semiClearQueueBtn=$('semi-clear-queue-btn'); if(semiClearQueueBtn) semiClearQueueBtn.onclick=clearRecommendQueueState;
+  const semiUseCurrentJobBtn=$('semi-use-current-job-btn'); if(semiUseCurrentJobBtn) semiUseCurrentJobBtn.onclick=clearQueueUseCurrentJob;
+  const semiJumpOpenedBtn=$('semi-jump-opened-btn'); if(semiJumpOpenedBtn) semiJumpOpenedBtn.onclick=jumpToOpenedCandidate;
+  const semiNextPendingBtn=$('semi-next-pending-btn'); if(semiNextPendingBtn) semiNextPendingBtn.onclick=jumpToNextPending;
   const semiSaveStandardBtn=$('semi-save-standard-btn'); if(semiSaveStandardBtn) semiSaveStandardBtn.onclick=saveJobStandard;
   const semiSaveSafetyBtn=$('semi-save-safety-btn'); if(semiSaveSafetyBtn) semiSaveSafetyBtn.onclick=saveAutoSafety;
   const semiAddQueueBtn=$('semi-add-queue-btn'); if(semiAddQueueBtn) semiAddQueueBtn.onclick=addRecommendQueue;
