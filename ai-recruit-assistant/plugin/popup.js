@@ -39,6 +39,7 @@ const state = {
   recommendStopAll:false,
   currentQueueIndex:0,
   autoSafety:{auto_enabled:false,match_threshold:80,daily_send_limit:20,min_delay_seconds:30,max_delay_seconds:90},
+  activeCandidateContext:null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -123,6 +124,35 @@ function advanceToNextPending(){
 }
 function markCurrentStatus(status, patch={}){ return updateCurrentQueueItem({status,...patch}); }
 function queueStatusCounts(){ return state.recommendQueue.reduce((acc,item)=>{ acc[item.status]=(acc[item.status]||0)+1; return acc; },{}); }
+function hashText(v=''){ let h=0; const t=String(v||''); for(let i=0;i<t.length;i+=1){ h=((h<<5)-h)+t.charCodeAt(i); h|=0; } return String(h); }
+function openedResumeCandidate(){ return currentRecommendWorkflowState().opened_candidate || state.candidate || null; }
+function queueItemIdentity(item){ const c=queueCandidateFromItem(item); return {name:c.name||'', age:c.age??'', key:item?.candidate_key||candidateQueueKey(c)}; }
+function buildActiveCandidateContext(candidate, queueIndex=state.currentQueueIndex, source='recommend_resume_modal', frameId=null){
+  const c=candidate||{};
+  return {candidate_key:candidateQueueKey(c),name:c.name||'',source,extracted_at:new Date().toISOString(),frame_id:frameId,raw_text_hash:hashText(c.raw_text||''),queue_index:queueIndex};
+}
+function isStaleCandidateContext(candidate){
+  const ctx=state.activeCandidateContext; const c=candidate||openedResumeCandidate()||{};
+  if(!ctx) return true;
+  const now=Date.now(); const ts=Date.parse(ctx.extracted_at||0);
+  if(!ts || (now-ts)>30000) return true;
+  if((ctx.name||'') !== (c.name||'')) return true;
+  if((ctx.raw_text_hash||'') !== hashText(c.raw_text||'')) return true;
+  if((ctx.queue_index??-1)!==(state.currentQueueIndex??-2)) return true;
+  return false;
+}
+function contextStatus(){
+  const q=queueItemIdentity(getCurrentQueueItem()||{}); const o=openedResumeCandidate()||{};
+  if(!o?.name) return 'stale';
+  if(isStaleCandidateContext(o)) return 'stale';
+  return q.name && o.name && q.name===o.name ? 'matched' : 'mismatch';
+}
+function clearCandidateDependentUi(){
+  const set=(id,v)=>{const el=$(id); if(el) el.textContent=v;};
+  set('sourcing-match-result','-');
+  const box=$('message-list'); if(box) box.innerHTML='';
+  state.priorityResult=null; state.messageVariants=[];
+}
 function normalizeRecommendedAction(action=''){
   const raw=String(action||'').toLowerCase();
   if(/connect|推进|建立|优先|high|s|a/.test(raw)) return 'connect';
@@ -163,7 +193,7 @@ function hydrateRecommendQueueItem(item){
 function buildRecommendQueueSnapshot(){
   const job=currentRecommendWorkflowState().current_job||state.job||{};
   const current=getCurrentQueueItem();
-  return {job_key:jobKeyFromJob(job),job_title:job.title||'',job_city:job.city||'',job_salary:job.salary||'',source_url:currentRecommendWorkflowState().best_frame_url||state.pageContext?.url||'',queue:(state.recommendQueue||[]).map(serializeRecommendQueueItem),current_index:state.currentQueueIndex,current_candidate_key:current?.candidate_key||candidateQueueKey(queueCandidateFromItem(current)),updated_at:new Date().toISOString()};
+  return {job_key:jobKeyFromJob(job),job_title:job.title||'',job_city:job.city||'',job_salary:job.salary||'',source_url:currentRecommendWorkflowState().best_frame_url||state.pageContext?.url||'',queue:(state.recommendQueue||[]).map(serializeRecommendQueueItem),current_index:state.currentQueueIndex,current_candidate_key:current?.candidate_key||candidateQueueKey(queueCandidateFromItem(current)),active_candidate_context:state.activeCandidateContext||null,updated_at:new Date().toISOString()};
 }
 async function persistRecommendQueueState(){
   const snapshot=buildRecommendQueueSnapshot();
@@ -178,6 +208,7 @@ function applyRecommendQueueSnapshot(snapshot){
   state.recommendQueue=(snapshot.queue||[]).map(hydrateRecommendQueueItem);
   state.currentQueueIndex=Math.min(Math.max(0, Number(snapshot.current_index||0)), Math.max(0,state.recommendQueue.length-1));
   state.pendingRecommendQueueState=null;
+  state.activeCandidateContext=snapshot.active_candidate_context||null;
   renderSemiAutoWorkflow();
   return snapshot;
 }
@@ -213,12 +244,16 @@ async function jumpToOpenedCandidate(){
   if(idx<0){ setSemiStatus('当前打开候选人不在队列中'); return null; }
   state.currentQueueIndex=idx;
   markCurrentStatus('opened',{candidate_detail:c,reason:'已匹配当前打开简历'});
+  state.activeCandidateContext=buildActiveCandidateContext(c, idx);
+  clearCandidateDependentUi();
   await persistRecommendQueueState();
   setSemiStatus(`已跳到当前打开候选人：${c.name||'-'}（第 ${idx+1} 人）`);
   return getCurrentQueueItem();
 }
 async function jumpToNextPending(){
+  const prev=state.currentQueueIndex;
   const next=advanceToNextPending();
+  if(state.currentQueueIndex!==prev){ state.activeCandidateContext=null; clearCandidateDependentUi(); }
   await persistRecommendQueueState();
   setSemiStatus(next?`已跳到下一个待处理：${queueCandidateFromItem(next).name||'-'}`:'没有待处理候选人');
   return next;
@@ -1248,9 +1283,12 @@ async function extractRecommendResumeWorkflow(){
     if(idx>=0){
       state.currentQueueIndex=idx;
       markCurrentStatus('opened',{candidate_detail:state.candidate,reason:'已识别并匹配当前打开简历'});
+      state.activeCandidateContext=buildActiveCandidateContext(state.candidate, idx);
+      clearCandidateDependentUi();
       await persistRecommendQueueState();
     }
   }
+  if(state.recommendQueue.length && findQueueIndexForCandidate(state.candidate)<0){ setSemiStatus('当前打开候选人不在队列中，可加入队列或仅分析当前简历。'); }
   state.pageContext={...(state.pageContext||{}),module_type:state.sourcingModule,page_type:'recommend_page',candidate:state.candidate};
   renderCandidate();
   setRecommendWorkflowStatus(`已识别当前简历：${state.candidate.name||'-'} / ${state.candidate.expected_position||state.candidate.current_title||'-'}`);
@@ -1389,7 +1427,12 @@ function renderSemiAutoWorkflow(){
   set('semi-standard-status', standard ? '已配置' : '未配置');
   set('semi-scanned-count', (rw.scanned_candidates||[]).length);
   set('semi-queue-count', `${state.recommendQueue.length}（pending ${counts.pending||0} / analyzed ${counts.analyzed||0} / sent ${counts.sent||0}）`);
-  set('semi-current-candidate', item ? `${state.currentQueueIndex+1}. ${queueCandidateFromItem(item).name||'-'}` : (state.candidate?.name || '-'));
+  const qName=queueCandidateFromItem(item).name||'-';
+  const pName=openedResumeCandidate()?.name||'-';
+  set('semi-current-candidate', item ? `${state.currentQueueIndex+1}. ${qName}` : (state.candidate?.name || '-'));
+  set('semi-queue-current-name', qName);
+  set('semi-page-opened-name', pName);
+  set('semi-context-status', contextStatus());
   set('semi-match-score', item?.match_score ?? state.priorityResult?.score ?? '-');
   set('semi-recommended-action', item?.recommended_action || state.priorityResult?.recommended_action || '-');
   set('semi-current-mode', state.greetingMode || 'manual');
@@ -1428,19 +1471,32 @@ function updateCurrentQueueItem(patch){
 }
 
 async function analyzeSemiAutoCurrent(){
-  const item=currentQueueItem();
+  const item=getCurrentQueueItem();
   if(!item){ feedback('队列为空，请先加入推荐队列','warn'); return null; }
-  await extractRecommendResumeWorkflow();
-  if(!state.candidate?.name || state.candidate.profile_complete!==true){
-    updateCurrentQueueItem({status:'opened',reason:'请先在 BOSS 页面手动点击该候选人姓名打开详情'});
-    setSemiStatus('未检测到完整详情：请手动打开当前候选人详情后再点分析');
-    return null;
+  const queueName=queueCandidateFromItem(item).name||'';
+  const res=await sendToSourcingFrame({type:'EXTRACT_SOURCING_RESUME_MODAL'});
+  if(!res?.ok || !res?.candidate?.name){ setSemiStatus('未检测到已打开简历，请先手动打开候选人详情'); return null; }
+  const opened=res.candidate;
+  const openedName=opened.name||'';
+  const matchedByName=queueName && openedName && queueName===openedName;
+  if(!matchedByName){
+    const action=prompt(`当前打开简历与队列当前候选人不一致：队列=${queueName||'-'}，页面=${openedName||'-'}。输入 1=使用当前打开简历分析，2=切换队列到该候选人，其他=取消`,'');
+    if(action==='2'){
+      const idx=findQueueIndexForCandidate(opened);
+      if(idx<0){ setSemiStatus('页面候选人不在队列中，已取消'); return null; }
+      state.currentQueueIndex=idx;
+      markCurrentStatus('opened',{candidate_detail:opened,reason:'已切换到页面当前候选人'});
+    }else if(action!=='1'){
+      setSemiStatus('已取消分析'); return null;
+    }
   }
+  state.candidate=opened;
+  state.activeCandidateContext=buildActiveCandidateContext(opened, state.currentQueueIndex);
   if(!state.job?.title) await extractRecommendJobWorkflow();
   await analyzeCandidate();
   if(!state.priorityResult?.score && state.priorityResult?.score!==0) return null;
   const action=normalizeRecommendedAction(state.priorityResult.recommended_action || state.priorityResult.message_intent);
-  updateCurrentQueueItem({status:'analyzed',candidate_detail:state.candidate,match_score:state.priorityResult.score,match_level:state.priorityResult.level||'',recommended_action:action,reason:(state.priorityResult.matched_points||state.priorityResult.reasons||[]).join('；')});
+  markCurrentStatus('analyzed',{candidate_detail:state.candidate,match_score:state.priorityResult.score,match_level:state.priorityResult.level||'',recommended_action:action,reason:(state.priorityResult.matched_points||state.priorityResult.reasons||[]).join('；')});
   await logSemiAutoAction('analyzed',{match_result:state.priorityResult});
   setSemiStatus(`分析完成：${state.candidate.name} / ${state.priorityResult.score} / ${action}`);
   return state.priorityResult;
