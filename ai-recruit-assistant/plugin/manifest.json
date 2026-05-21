@@ -8,19 +8,28 @@
     "default_title": "AI Recruit Assistant"
   },
   "permissions": [
-    "storage",
     "activeTab",
-    "scripting"
+    "tabs",
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*"
+    "https://www.zhipin.com/*",
+    "https://*.zhipin.com/*",
+    "http://127.0.0.1:8787/*",
+    "http://localhost:8787/*",
+    "<all_urls>"
   ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "css": ["styles.css"]
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

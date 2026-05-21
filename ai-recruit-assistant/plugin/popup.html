@@ -1,11 +1,253 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>AI招聘助手</title><link rel="stylesheet" href="styles.css" /></head><body><main class="popup"><h1>AI招聘助手</h1><p id="service-status">服务检测中...</p>
-<section class="card"><h2>1. 今日推荐 TOP10</h2><ul id="top10-list" class="list"></ul></section>
-<section class="card"><h2>2. 候选人分析区</h2><textarea id="candidate-manual" placeholder="提取失败时粘贴候选人信息"></textarea><p>匹配度：<span id="match-rate">-</span></p><p>等级：<span id="candidate-level">-</span></p><p>优先级：<span id="candidate-priority">-</span></p><p>推荐动作：<span id="recommended-action">-</span></p><p>推荐模式：<span id="recommended-mode">-</span></p><p>推荐原因：<span id="recommended-reason">-</span></p><button id="analyze-btn">分析候选人</button></section>
-<section class="card"><h2>3. 打招呼模式</h2><p>当前模式：<span id="current-mode">assist</span></p><label><input type="radio" name="greet_mode" value="manual"/>manual</label><label><input type="radio" name="greet_mode" value="assist" checked/>assist</label><label><input type="radio" name="greet_mode" value="auto"/>auto</label><button id="save-mode-btn">保存设置</button></section>
-<section class="card"><h2>4. 打招呼操作区</h2><div id="message-list"></div><button id="mark-quality-btn">标记优质候选人</button><button id="mark-greeted-btn">标记已打招呼</button></section>
-<section class="card"><h2>5. 自动队列</h2><p>队列数量：<span id="queue-count">0</span></p><button id="queue-add-btn">加入队列</button><button id="queue-start-btn">开始辅助</button><button id="queue-pause-btn">暂停</button><button id="queue-clear-btn">清空</button><button id="queue-stop-all-btn">STOP ALL</button></section>
-<section class="card"><h2>6. 聊天分析</h2><textarea id="chat-manual" placeholder="提取失败时粘贴聊天记录"></textarea><p>状态：<span id="chat-status">-</span></p><p>阶段：<span id="chat-stage">-</span></p><p>建议：<span id="chat-advice">-</span></p><button id="analyze-chat-btn">分析聊天</button><div class="reply-box"><p id="reply-1"></p><button id="fill-reply-1-btn">填入</button></div><div class="reply-box"><p id="reply-2"></p><button id="fill-reply-2-btn">填入</button></div></section>
-<section class="card"><h2>7. 跟进提醒</h2><p>未回复候选人：<span id="followup-list">-</span></p><button id="generate-followup-btn">生成跟进话术</button></section>
-<section class="card"><h2>8. 今日数据</h2><p>今日分析人数：<span id="today-analyzed">0</span></p><p>生成话术次数：<span id="today-generated">0</span></p><p>填入次数：<span id="today-filled">0</span></p><p>标记发送次数：<span id="today-sent">0</span></p><p>自动执行次数：<span id="today-auto">0</span></p><p>有兴趣/观望/未回复/拒绝：<span id="today-status-split">0/0/0/0</span></p></section>
-<section class="card"><h2>状态标记</h2><button data-status="有兴趣" class="status-btn">有兴趣</button><button data-status="观望" class="status-btn">观望</button><button data-status="未回复" class="status-btn">未回复</button><button data-status="拒绝" class="status-btn">拒绝</button></section>
-</main><script src="popup.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI招聘助手</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="popup">
+    <h1>AI招聘助手</h1>
+    <p id="service-status">服务检测中...</p>
+    <p id="action-feedback"></p>
+
+    <section class="card">
+      <h2>当前页面上下文</h2>
+      <p>页面类型：<span id="page-type">-</span></p>
+      <p>Context：<span id="context-id">-</span></p>
+      <p>URL：<span id="current-url">-</span></p>
+      <p id="analysis-reliability-warning"></p>
+      <p>岗位来源：<span id="job-source">-</span></p>
+      <p>候选人来源：<span id="candidate-source">-</span></p>
+      <p>简历完整度：<span id="candidate-complete">-</span></p>
+      <button id="refresh-context-btn">刷新上下文</button>
+    </section>
+
+    <section class="card">
+      <h2>当前岗位</h2>
+      <p>岗位：<span id="job-title">-</span></p>
+      <p>城市：<span id="job-city">-</span></p>
+      <p>薪资：<span id="job-salary">-</span></p>
+      <p>岗位来源：<span id="job-source-detail">-</span></p>
+      <p>JD完整度：<span id="job-jd-complete">-</span></p>
+      <p>岗位要求库：<span id="job-profile-status">-</span></p>
+      <p>当前岗位上下文：<span id="current-job-context-status">-</span></p>
+      <p id="job-warning"></p>
+      <div id="job-profile-matches">暂无相似岗位配置</div>
+      <p>描述：<span id="job-description-preview">-</span></p>
+      <textarea id="job-description-manual" placeholder="可粘贴岗位描述、项目方向"></textarea>
+      <textarea id="job-responsibilities-manual" placeholder="可粘贴岗位职责、工作内容"></textarea>
+      <textarea id="job-requirements-manual" placeholder="可粘贴任职要求、技能要求、加分项"></textarea>
+      <textarea id="job-keywords-manual" placeholder="关键词，用逗号分隔，例如 AI视频,ComfyUI,Stable Diffusion,剪辑,镜头语言"></textarea>
+      <button id="save-job-profile-btn">保存岗位要求库</button>
+      <button id="save-job-asset-btn">保存岗位</button>
+      <button id="load-job-profile-btn">加载岗位要求库</button>
+      <button id="save-job-config-btn">保存岗位配置</button>
+      <button id="refresh-job-btn">刷新岗位</button>
+    </section>
+
+    <section class="card">
+      <h2>当前候选人</h2>
+      <textarea id="candidate-manual" placeholder="自动读取失败时粘贴候选人信息"></textarea>
+      <p>姓名：<span id="candidate-name">-</span></p>
+      <p>标题：<span id="candidate-title">-</span></p>
+      <p>城市：<span id="candidate-city">-</span></p>
+      <p>年限：<span id="candidate-exp">-</span></p>
+      <p>技能：<span id="candidate-skills">-</span></p>
+      <p id="candidate-warning"></p>
+      <p>匹配度：<span id="match-rate">-</span></p>
+      <p>等级：<span id="candidate-level">-</span></p>
+      <p>优先级：<span id="candidate-priority">-</span></p>
+      <p>推荐动作：<span id="recommended-action">-</span></p>
+      <p>推荐模式：<span id="recommended-mode">-</span></p>
+      <p>推荐原因：<span id="recommended-reason">-</span></p>
+      <p>评分可靠性：<span id="score-reliability">-</span></p>
+      <p>适配结论：<span id="fit-result">-</span></p>
+      <p>话术意图：<span id="message-intent">-</span></p>
+      <p>匹配项：<span id="matched-points">-</span></p>
+      <p>缺失项：<span id="missing-points">-</span></p>
+      <p>风险项：<span id="risk-points">-</span></p>
+      <button id="analyze-btn">分析候选人</button>
+      <button id="rule-match-btn">分析匹配</button>
+      <button id="save-candidate-asset-btn">保存候选人</button>
+      <button id="view-match-history-btn">查看历史匹配</button>
+      <button id="generate-message-btn">生成话术</button>
+      <div id="match-history-list"></div>
+    </section>
+
+
+    <section class="card">
+      <h2>推荐/搜索工作流</h2>
+      <p>支持 BOSS 推荐牛人 / 搜索 / 深度搜索；仅辅助识别、分析、生成话术，不会自动点击打招呼或自动发送。</p>
+      <p>当前模块：<span id="sourcing-module">-</span></p>
+      <p>当前岗位：<span id="sourcing-job-title">-</span></p>
+      <p>岗位库匹配状态：<span id="sourcing-job-profile-status">-</span></p>
+      <p>扫描候选人数：<span id="sourcing-scan-count">0</span></p>
+      <p>扫描候选人：<span id="sourcing-scan-names">-</span></p>
+      <p>当前打开简历候选人：<span id="sourcing-resume-candidate">未打开</span></p>
+      <p>最佳业务 Frame：<span id="sourcing-best-frame">-</span></p>
+      <p>当前候选人匹配结果：<span id="sourcing-match-result">-</span></p>
+      <button id="sourcing-diagnose-btn">诊断BOSS页面</button>
+      <button id="sourcing-extract-job-btn">识别当前岗位</button>
+      <button id="sourcing-scan-list-btn">扫描当前列表</button>
+      <button id="sourcing-extract-resume-btn">识别打开的简历</button>
+      <button id="sourcing-analyze-candidate-btn">分析当前候选人</button>
+      <button id="sourcing-generate-message-btn">生成打招呼话术</button>
+      <button id="sourcing-save-candidate-btn">保存候选人</button>
+      <button id="sourcing-save-match-btn">保存匹配记录</button>
+      <p id="recommend-workflow-status">未开始</p>
+      <pre id="recommend-workflow-debug"></pre>
+    </section>
+
+
+    <section class="card">
+      <h2>BOSS Frame Map</h2>
+      <p>先分析页面 frame 结构，只做定位诊断，不做候选人/岗位提取。</p>
+      <button id="analyze-frame-map-btn">分析页面Frame结构</button>
+      <p>最佳候选列表 Frame：<span id="best-candidate-frame">-</span></p>
+      <p>最佳简历弹窗 Frame：<span id="best-resume-frame">-</span></p>
+      <div id="boss-frame-map-list">暂无 Frame Map</div>
+    </section>
+
+
+
+    <section class="card" style="display:none">
+      <h2>推荐/搜索页扫描</h2>
+      <p>扫描页类型：<span id="scan-page-type">-</span></p>
+      <p>候选人数：<span id="scan-candidate-count">0</span></p>
+      <p>岗位匹配：<span id="scan-job-status">未扫描</span></p>
+      <button id="scan-candidates-btn">扫描当前页候选人</button>
+      <button id="save-scanned-candidates-btn">保存本页候选人</button>
+      <button id="clear-scanned-candidates-btn">清空扫描结果</button>
+      <p id="scan-save-summary"></p>
+      <div id="scan-candidate-list"></div>
+    </section>
+
+
+    <section class="card">
+      <h2>半自动打招呼工作流</h2>
+      <p><b>默认人工确认。</b> manual 只生成话术；assist 需点击确认后仅填入；auto 为高风险，默认关闭，需显式启用并二次确认。</p>
+      <p>当前岗位：<span id="semi-job-title">-</span></p>
+      <p>岗位标准：<span id="semi-standard-status">未配置</span></p>
+      <p>扫描候选人数：<span id="semi-scanned-count">0</span></p>
+      <p>队列人数：<span id="semi-queue-count">0</span></p>
+      <p>当前处理候选人：<span id="semi-current-candidate">-</span></p>
+      <p>队列当前候选人：<span id="semi-queue-current-name">-</span></p>
+      <p>页面打开候选人：<span id="semi-page-opened-name">-</span></p>
+      <p>上下文状态：<span id="semi-context-status">stale</span></p>
+      <p>匹配分：<span id="semi-match-score">-</span></p>
+      <p>推荐动作：<span id="semi-recommended-action">-</span></p>
+      <p>当前模式：<span id="semi-current-mode">manual</span></p>
+      <p class="warn">Auto 高风险：<span id="semi-auto-status">未启用</span></p>
+      <details>
+        <summary>配置岗位标准</summary>
+        <textarea id="standard-must-have" placeholder="必备关键词，逗号分隔"></textarea>
+        <textarea id="standard-nice-have" placeholder="加分关键词，逗号分隔"></textarea>
+        <textarea id="standard-reject" placeholder="拒绝/风险关键词，逗号分隔"></textarea>
+        <input id="standard-target-city" placeholder="目标城市" />
+        <input id="standard-min-experience" type="number" min="0" placeholder="最低年限" />
+        <input id="standard-max-salary" placeholder="最高薪资，例如 50K" />
+        <input id="standard-required-education" placeholder="学历要求，例如 本科" />
+        <textarea id="standard-required-companies" placeholder="必备公司/行业背景，逗号分隔"></textarea>
+        <textarea id="standard-preferred-companies" placeholder="偏好公司，逗号分隔"></textarea>
+        <textarea id="standard-project-types" placeholder="偏好项目类型，逗号分隔"></textarea>
+        <textarea id="standard-styles" placeholder="偏好风格，逗号分隔"></textarea>
+        <textarea id="standard-scoring-weights" placeholder='评分权重 JSON，可选，例如 {"must":40,"nice":20}'></textarea>
+        <button id="semi-save-standard-btn">保存岗位标准</button>
+      </details>
+      <fieldset>
+        <legend>Auto 安全控制</legend>
+        <label><input id="semi-auto-enabled" type="checkbox" /> 显式启用 auto（高风险）</label>
+        <input id="semi-match-threshold" type="number" min="0" max="100" value="80" placeholder="最低匹配分" />
+        <input id="semi-daily-limit" type="number" min="1" value="20" placeholder="每日自动发送上限" />
+        <input id="semi-min-delay" type="number" min="1" value="30" placeholder="最小延迟秒" />
+        <input id="semi-max-delay" type="number" min="1" value="90" placeholder="最大延迟秒" />
+        <button id="semi-save-safety-btn">保存安全设置</button>
+      </fieldset>
+      <button id="semi-restore-queue-btn">恢复队列/继续上次队列</button>
+      <button id="semi-clear-queue-btn">清空队列</button>
+      <button id="semi-use-current-job-btn">清空并使用当前岗位</button>
+      <button id="semi-jump-opened-btn">跳到当前打开候选人</button>
+      <button id="semi-next-pending-btn">跳到下一个待处理</button>
+      <button id="semi-add-queue-btn">加入推荐队列</button>
+      <button id="semi-start-btn">开始半自动处理</button>
+      <button id="semi-pause-btn">暂停</button>
+      <button id="semi-resume-btn">继续</button>
+      <button id="semi-skip-btn">跳过当前候选人</button>
+      <button id="semi-analyze-btn">分析当前候选人</button>
+      <button id="semi-generate-btn">生成话术</button>
+      <button id="semi-fill-btn">填入输入框</button>
+      <button id="semi-confirm-send-btn">确认发送</button>
+      <button id="semi-stop-btn">STOP ALL</button>
+      <p id="semi-workflow-status">未开始</p>
+      <div id="semi-queue-list"></div>
+    </section>
+
+
+    <section class="card">
+      <h2>打招呼模式</h2>
+      <p>当前模式：<span id="current-mode">manual</span></p>
+      <label><input type="radio" name="greet_mode" value="manual" checked />manual</label>
+      <label><input type="radio" name="greet_mode" value="assist" />assist</label>
+      <label><input type="radio" name="greet_mode" value="auto" />auto</label>
+      <button id="save-mode-btn">保存设置</button>
+    </section>
+
+    <section class="card">
+      <h2>话术列表</h2>
+      <div id="message-list"></div>
+      <button id="mark-quality-btn">标记优质候选人</button>
+      <button id="mark-greeted-btn">标记已打招呼</button>
+    </section>
+
+    <section class="card">
+      <h2>自动队列</h2>
+      <p>队列数量：<span id="queue-count">0</span></p>
+      <button id="queue-add-btn">加入队列</button>
+      <button id="queue-start-btn">开始辅助</button>
+      <button id="queue-pause-btn">暂停</button>
+      <button id="queue-clear-btn">清空</button>
+      <button id="queue-stop-all-btn">STOP ALL</button>
+    </section>
+
+    <section class="card">
+      <h2>聊天分析</h2>
+      <textarea id="chat-manual" placeholder="自动读取失败时粘贴聊天记录"></textarea>
+      <p>当前聊天对象：<span id="chat-candidate-name">-</span></p>
+      <p id="chat-context-warning"></p>
+      <p>状态：<span id="chat-status">-</span></p>
+      <p>阶段：<span id="chat-stage">-</span></p>
+      <p>建议：<span id="chat-advice">-</span></p>
+      <button id="analyze-chat-btn">分析聊天</button>
+      <button id="add-followup-btn">加入跟进</button>
+      <div class="reply-box"><p id="reply-1"></p><button id="fill-reply-1-btn">填入回复1</button></div>
+      <div class="reply-box"><p id="reply-2"></p><button id="fill-reply-2-btn">填入回复2</button></div>
+    </section>
+
+    <section class="card">
+      <h2>今日待跟进</h2>
+      <div id="followup-list">暂无今日待跟进</div>
+    </section>
+
+
+    <section class="card">
+      <h2>DOM 调试</h2>
+      <button id="debug-dom-btn">输出 DOM 调试信息</button>
+      <pre id="debug-dom-output"></pre>
+    </section>
+    <section class="card">
+      <h2>今日数据</h2>
+      <p>今日分析人数：<span id="today-analyzed">0</span></p>
+      <p>生成话术次数：<span id="today-generated">0</span></p>
+      <p>填入次数：<span id="today-filled">0</span></p>
+      <p>标记发送次数：<span id="today-sent">0</span></p>
+      <p>自动执行次数：<span id="today-auto">0</span></p>
+      <p>有兴趣/观望/未回复/拒绝：<span id="today-status-split">0/0/0/0</span></p>
+      <p>加入跟进：<span id="today-followup-added">0</span></p>
+      <p>已处理跟进：<span id="today-followup-handled">0</span></p>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
