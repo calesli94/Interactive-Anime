@@ -2303,6 +2303,48 @@
     return value;
   }
 
+  function simpleTextHash(text = "") {
+    const raw = String(text || "");
+    let hash = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash = ((hash << 5) - hash) + raw.charCodeAt(i);
+      hash |= 0;
+    }
+    return String(hash);
+  }
+
+  function findVisibleResumeHeader(root = document) {
+    const navReject = /推荐|最新|精选|筛选|打招呼|工作经历|教育经历|项目经历|沟通|候选人列表/;
+    const statusRe = /(在线|刚刚活跃|今日活跃|本周活跃|3日内活跃)/;
+    const ageRe = /\d{2}\s*岁/;
+    const eduRe = /(本科|大专|硕士|博士|中专|高中)/;
+    const nodes = queryVisible(["h1", "h2", "h3", "header", "div", "section", "span", "p"], root);
+    const candidates = [];
+    for (const node of nodes) {
+      if (!(node instanceof Element) || isExtensionDom(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.top < 0 || rect.top > 250 || rect.width < 120 || rect.height < 18) continue;
+      const text = cleanText(node.innerText || node.textContent || "");
+      if (!text || text.length > 300 || navReject.test(text)) continue;
+      const nameMatch = text.match(/([\u4e00-\u9fa5]{2,6})/);
+      const name = validRecommendCandidateName(nameMatch?.[1] || "");
+      if (!name) continue;
+      const related = cleanText([text, textOf(node.parentElement), textOf(node.nextElementSibling), textOf(node.closest?.("section,article,div"))].filter(Boolean).join(" "));
+      const hasStatus = statusRe.test(related);
+      const hasAge = ageRe.test(related);
+      const hasEdu = eduRe.test(related);
+      if (!(hasAge && hasEdu)) continue;
+      let score = 0;
+      if (hasStatus) score += 25;
+      if (hasAge) score += 25;
+      if (hasEdu) score += 25;
+      score += Math.max(0, 120 - rect.top);
+      score += Math.max(0, 80 - Math.abs(28 - rect.height));
+      candidates.push({ name, header_text: oneLine(text).slice(0, 220), rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) }, source: "visible_resume_header", node, score });
+    }
+    return candidates.sort((a, b) => b.score - a.score)[0] || null;
+  }
+
   function extractRecommendResumeModalFromBestFrame() {
     const raw = recommendTextForBestFrame();
     const detailSignal = /工作经历|教育经历|专业技能|牛人分析器/.test(raw);
@@ -2427,17 +2469,25 @@
     try {
       if (/\/web\/frame\/recommend(?:[/?#]|$)/.test(location.href.toLowerCase())) return extractRecommendResumeModalFromBestFrame();
       if (detectPageType() !== "recommend_page" && !isSourcingFrameContext()) return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "当前页面不是推荐牛人页或搜索页" };
+      const previousOpenedName = "";
+      const extractedAt = Date.now();
+      const bodyFresh = cleanText(document.body?.innerText || document.body?.textContent || "");
+      const header = findVisibleResumeHeader(document);
+      const headerName = header?.name || "";
+      const queueName = "";
+      const headerContainer = header?.node?.closest?.("[class*='detail'], [class*='resume'], [class*='profile'], [class*='geek'], [class*='candidate'], section, article, main, div");
       const item = resumeModalCandidates()[0] || recommendModalLikeCandidates()[0];
-      if (!item) {
+      if (!item && !headerContainer) {
         const fallback = recommendResumeTextFallback();
         if (fallback.candidate) return { ok: true, candidate: fallback.candidate, debug: { modal_strategy: "body_innerText_fallback", fallback: fallback.debug, modal_like_candidates: [] } };
         return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: "未检测到已打开的推荐页简历弹窗", debug: { resume_modal_candidates: [], fallback: fallback.debug } };
       }
-      const raw = cleanText(item.raw_text || textOf(item.node));
+      const containerText = cleanText(headerContainer?.innerText || headerContainer?.textContent || "");
+      const raw = cleanText(containerText || item?.raw_text || textOf(item?.node) || bodyFresh);
       const parsed = sourceCandidateFromRaw(raw, "recommend_resume_modal", raw);
       const exp = parseExperience(raw);
       const candidate = {
-        name: parsed.name || parseNameFromText(raw) || "",
+        name: headerName || parsed.name || parseNameFromText(raw) || "",
         age: parsed.age || parseAge(raw),
         experience_years: parsed.experience_years ?? exp.experience_years,
         education: parsed.education || parseEducation(raw),
@@ -2457,12 +2507,14 @@
         project_keywords: parsed.project_keywords || [],
         company_keywords: parsed.company_keywords || [],
         style_keywords: parsed.style_keywords || [],
+        extracted_at: extractedAt,
+        raw_text_hash: simpleTextHash(raw),
       };
       if (!candidate.name) {
         const fallback = recommendResumeTextFallback();
         if (fallback.candidate?.name) return { ok: true, candidate: fallback.candidate, debug: { modal_strategy: "body_innerText_fallback_after_dom_parse", modal: debugNode(item.node, item.score, item.reason), fallback: fallback.debug } };
       }
-      return { ok: Boolean(candidate.name || candidate.raw_text), candidate, debug: { modal_strategy: item.raw_text ? "recommend_modal_like_dom" : "resume_modal_candidates", modal: debugNode(item.node, item.score, item.reason) } };
+      return { ok: Boolean(candidate.name || candidate.raw_text), candidate, opened_candidate: candidate, debug: { modal_strategy: item?.raw_text ? "recommend_modal_like_dom" : "resume_modal_candidates", modal: item ? debugNode(item.node, item.score, item.reason) : null, opened_resume_detection_debug: { extracted_at: extractedAt, visible_header_name: headerName, visible_header_text: header?.header_text || "", previous_opened_candidate_name: previousOpenedName, queue_current_name: queueName, raw_text_hash: simpleTextHash(raw), source: header?.source || "resume_modal_candidates", stale_cache_used: false } } };
     } catch (e) {
       return { ok: false, candidate: emptyCandidate("recommend_resume_modal"), error: `推荐页简历弹窗识别异常：${e.message || e}` };
     }

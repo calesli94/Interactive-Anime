@@ -154,6 +154,12 @@ function clearCandidateDependentUi(){
   const box=$('message-list'); if(box) box.innerHTML='';
   state.priorityResult=null; state.messageVariants=[];
 }
+function clearOpenedCandidateContext(reason=''){
+  updateRecommendWorkflowState({opened_candidate:null}, reason||'clear_opened_candidate');
+  state.candidate={};
+  state.activeCandidateContext=null;
+  clearCandidateDependentUi();
+}
 function normalizeRecommendedAction(action=''){
   const raw=String(action||'').toLowerCase();
   if(/connect|推进|建立|优先|high|s|a/.test(raw)) return 'connect';
@@ -263,7 +269,7 @@ async function jumpToOpenedCandidate(){
 async function jumpToNextPending(){
   const prev=state.currentQueueIndex;
   const next=advanceToNextPending();
-  if(state.currentQueueIndex!==prev){ state.activeCandidateContext=null; clearCandidateDependentUi(); }
+  if(state.currentQueueIndex!==prev){ clearOpenedCandidateContext('next_pending_changed'); }
   await persistRecommendQueueState();
   setSemiStatus(next?`已跳到下一个待处理：${queueCandidateFromItem(next).name||'-'}`:'没有待处理候选人');
   return next;
@@ -1277,6 +1283,7 @@ async function scanRecommendListWorkflow(){
 
 async function extractRecommendResumeWorkflow(){
   feedback('正在识别当前打开的简历...');
+  clearOpenedCandidateContext('before_extract_resume');
   const res=await sendToSourcingFrame({type:'EXTRACT_RECOMMEND_RESUME_MODAL'});
   if(!res?.ok){
     updateRecommendWorkflowState({opened_candidate:null,last_scan_debug:{resume_debug:res?.debug||null,message:res?.error||''}}, 'extract_resume');
@@ -1653,6 +1660,7 @@ async function startSemiAutoProcessing(){
   if(!state.recommendQueue.length) addRecommendQueue();
   if(!state.recommendQueue.length) return;
   state.recommendQueueRunning=true; state.recommendQueuePaused=false; state.recommendStopAll=false;
+  clearOpenedCandidateContext('start_semi_auto');
   await persistRecommendQueueState();
   setSemiStatus('半自动处理已开始：V1 请手动打开当前候选人详情后点击“分析当前候选人”');
   if(state.greetingMode==='auto'){
@@ -1664,7 +1672,7 @@ async function startSemiAutoProcessing(){
 function pauseSemiAuto(){ state.recommendQueuePaused=true; state.recommendQueueRunning=false; persistRecommendQueueState().catch(()=>{}); setSemiStatus('已暂停'); }
 function resumeSemiAuto(){ state.recommendQueuePaused=false; state.recommendQueueRunning=true; persistRecommendQueueState().catch(()=>{}); setSemiStatus('已继续，请手动打开候选人详情后处理'); }
 function stopSemiAuto(){ state.recommendStopAll=true; state.recommendQueueRunning=false; state.recommendQueuePaused=false; logSemiAutoAction('stop_all').catch(()=>{}); persistRecommendQueueState().catch(()=>{}); setSemiStatus('STOP ALL 已触发：禁止后续自动发送'); }
-async function skipSemiAutoCurrent(){ markCurrentStatus('skipped',{reason:'用户跳过'}); await logSemiAutoAction('skipped').catch(()=>{}); advanceToNextPending(); await persistRecommendQueueState(); setSemiStatus('已跳过当前候选人'); }
+async function skipSemiAutoCurrent(){ markCurrentStatus('skipped',{reason:'用户跳过'}); await logSemiAutoAction('skipped').catch(()=>{}); const prev=state.currentQueueIndex; advanceToNextPending(); if(state.currentQueueIndex!==prev) clearOpenedCandidateContext('skip_to_next'); await persistRecommendQueueState(); setSemiStatus('已跳过当前候选人'); }
 
 async function scanCandidateList(){
   feedback('正在扫描当前页候选人...');
